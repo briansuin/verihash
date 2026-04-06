@@ -1,0 +1,31 @@
+# Wails
+build/bin
+bin/
+frontend/dist
+node_modules
+wails.exe
+gui/dist
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go
+vendor/
+*.test
+*.out
+go.sum
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# VeriHash Specific (Secrets)
+.node_secret.key
+node_identity.json
+nexus_config.json
+verihash.db
+*.encrypted.json
+*.bak

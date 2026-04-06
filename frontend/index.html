@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+    <title>VeriHash Nexus</title>
+    <link rel="stylesheet" href="./src/style.css"/>
+</head>
+<body id="app-body">
+
+    <!-- ===== WALLET OVERLAY ===== -->
+    <!-- Shown on startup when wallet needs unlock/init/migration. Hidden by JS once active. -->
+    <div id="wallet-overlay" class="wallet-overlay" style="display:none;">
+        <div class="wallet-box">
+            <div class="wallet-logo">
+                <span class="blinking-cursor">_</span>VERIHASH::NEXUS
+            </div>
+            <div class="wallet-subtitle" id="wallet-subtitle">WALLET LOCKED</div>
+
+            <!-- UNLOCK screen (encrypted key) -->
+            <div id="wallet-screen-unlock" class="wallet-screen" style="display:none;">
+                <p class="wallet-desc">Your identity key is encrypted. Enter your wallet password to continue.</p>
+                <div class="pwd-field-group">
+                    <label class="pwd-label">WALLET PASSWORD</label>
+                    <input type="password" class="pwd-input wallet-pwd-input" id="wallet-unlock-pwd"
+                           placeholder="Enter wallet password..." autocomplete="current-password">
+                </div>
+                <button class="wallet-btn" id="btn-wallet-unlock">[ UNLOCK WALLET ]</button>
+                <div class="wallet-status" id="wallet-unlock-status"></div>
+            </div>
+
+            <!-- MNEMONIC screen (first run — recovery phrase) -->
+            <div id="wallet-screen-mnemonic" class="wallet-screen" style="display:none;">
+                <p class="wallet-desc"><strong>CRYITICAL STEP:</strong> This is your 12-word recovery phrase. It is the ONLY way to recover your identity if you lose your password. <span style="color:var(--warning);">Write it down and store it offline.</span></p>
+                <div class="mnemonic-grid" id="mnemonic-display"></div>
+                <div class="pwd-field-group" style="margin-top: 15px; flex-direction: row; align-items: flex-start; gap: 10px;">
+                    <input type="checkbox" id="check-mnemonic-saved" style="margin-top: 4px; cursor: pointer;">
+                    <label for="check-mnemonic-saved" class="pwd-label" style="text-transform: none; cursor: pointer;">I have written down my recovery phrase and stored it in a safe place.</label>
+                </div>
+                <button class="wallet-btn" id="btn-mnemonic-next" disabled>[ I HAVE SAVED IT — CONTINUE ]</button>
+            </div>
+
+            <!-- INIT screen (first run — new key) -->
+            <div id="wallet-screen-init" class="wallet-screen" style="display:none;">
+                <p class="wallet-desc">Welcome! A new identity has been generated for you.<br>
+                Set a <strong>wallet password</strong> to encrypt it on disk. This password is required every time you open VeriHash.</p>
+                <div class="pwd-field-group">
+                    <label class="pwd-label">SET WALLET PASSWORD</label>
+                    <input type="password" class="pwd-input wallet-pwd-input" id="wallet-init-pwd"
+                           placeholder="Set a strong wallet password..." autocomplete="new-password">
+                </div>
+                <div class="pwd-field-group">
+                    <label class="pwd-label">CONFIRM PASSWORD</label>
+                    <input type="password" class="pwd-input wallet-pwd-input" id="wallet-init-pwd-confirm"
+                           placeholder="Confirm your password..." autocomplete="new-password">
+                </div>
+                <button class="wallet-btn" id="btn-wallet-init">[ INITIALIZE WALLET ]</button>
+                <div class="wallet-status" id="wallet-init-status"></div>
+            </div>
+
+            <!-- MIGRATE screen (existing plaintext key) -->
+            <div id="wallet-screen-migrate" class="wallet-screen" style="display:none;">
+                <p class="wallet-desc">Your key is currently stored <strong style="color:#ffaa00;">unencrypted</strong> on disk.<br>
+                Set a wallet password to encrypt it now. This is a one-time migration.</p>
+                <div class="pwd-field-group">
+                    <label class="pwd-label">NEW WALLET PASSWORD</label>
+                    <input type="password" class="pwd-input wallet-pwd-input" id="wallet-migrate-pwd"
+                           placeholder="Set a strong wallet password..." autocomplete="new-password">
+                </div>
+                <div class="pwd-field-group">
+                    <label class="pwd-label">CONFIRM PASSWORD</label>
+                    <input type="password" class="pwd-input wallet-pwd-input" id="wallet-migrate-pwd-confirm"
+                           placeholder="Confirm your password..." autocomplete="new-password">
+                </div>
+                <button class="wallet-btn" id="btn-wallet-migrate">[ ENCRYPT &amp; CONTINUE ]</button>
+                <div class="wallet-status" id="wallet-migrate-status"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Matrix Code Rain Canvas -->
+    <canvas id="matrix-canvas"></canvas>
+
+
+    <div class="app-layout">
+        <!-- Left Main Workspace -->
+        <main class="main-workspace" id="main-workspace">
+            <!-- Header Section -->
+            <header class="hud-header">
+                <div class="logo">
+                    <span class="blinking-cursor">_</span>VERIHASH::NEXUS
+                </div>
+                <!-- Dual-View Tab Navigation -->
+                <nav class="view-tabs">
+                    <button class="view-tab active" id="tab-workbench" data-view="workbench">[ █ WORKBENCH ]</button>
+                    <button class="view-tab" id="tab-ledger" data-view="ledger">[ █ THE_LEDGER ]</button>
+                </nav>
+                <div class="status-indicator" id="global-status">
+                    <div class="status-dot"></div>
+                    <span id="status-text">SYSTEM STANDBY</span>
+                </div>
+            </header>
+
+            <!-- ====== VIEW: WORKBENCH ====== -->
+            <div class="view-panel" id="view-workbench">
+                <!-- UPPER LAYER: Scrollable Viewports -->
+                <div class="viewport-layer">
+                    <!-- Default Matrix UI (Hidden when workspace active) -->
+                    <section class="telemetry-panel" id="telemetry-panel">
+                        <div class="panel-title">// CORE_TELEMETRY > CONSOLE</div>
+                        <div class="console-output" id="console-output">
+                            <div class="sys">SYSTEM BOOT SEQUENCE INITIATED...</div>
+                            <div class="sys">AWAITING WORKSPACE BINDING...</div>
+                        </div>
+                    </section>
+
+                    <!-- Focused Workspace View (Hidden by default) -->
+                    <section class="workspace-view telemetry-panel" id="workspace-view" style="display: none;">
+                        <div class="panel-title" style="display: flex; justify-content: space-between; align-items: center;">
+                            <span>// CONTEXT_LOCK: <span id="active-workspace-name" style="color: #00ffcc;">None</span></span>
+                            <div class="tree-actions">
+                                <button class="cyber-btn sm" id="btn-select-all" style="font-size:0.6rem; padding: 2px 8px; border-style: dotted;">[ ALL ]</button>
+                                <button class="cyber-btn sm" id="btn-deselect-all" style="font-size:0.6rem; padding: 2px 8px; border-style: dotted;">[ NONE ]</button>
+                            </div>
+                        </div>
+                        <div class="file-tree-container" id="file-tree-container">
+                            <!-- File checkboxes stream here -->
+                        </div>
+                    </section>
+                </div>
+
+                <!-- LOWER LAYER: Static Action Base -->
+                <div class="action-footer">
+                    <button class="cyber-btn lg pulse-glow" id="btn-mint">
+                        <span class="btn-text">MINT_CREDENTIAL</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- ====== VIEW: THE LEDGER ====== -->
+            <div class="view-panel" id="view-ledger" style="display: none;">
+                <div class="viewport-layer">
+                    <section class="telemetry-panel" id="ledger-panel">
+                        <div class="panel-title" style="display: flex; justify-content: space-between; align-items: center;">
+                            <span>// CREDENTIAL_ARCHIVE > IMMUTABLE_LOG</span>
+                            <div style="display: flex; gap: 6px;">
+                                <button class="cyber-btn sm" id="btn-verify-chain" style="font-size:0.6rem; padding: 2px 10px; border-color: rgba(0,255,204,0.4);">[ VERIFY CHAIN ]</button>
+                                <button class="cyber-btn sm" id="btn-refresh-ledger" style="font-size:0.6rem; padding: 2px 10px;">[ REFRESH ]</button>
+                            </div>
+                        </div>
+                        <!-- Chain Integrity Status Bar -->
+                        <div class="chain-status-bar" id="chain-status-bar">
+                            <span class="chain-status-icon" id="chain-status-icon">⧗</span>
+                            <div class="chain-status-info">
+                                <span id="chain-status-label">Verifying chain...</span>
+                                <span class="chain-stats" id="chain-stats"></span>
+                            </div>
+                        </div>
+                        <div class="ledger-container" id="ledger-container">
+                            <!-- Ledger entries stream here -->
+                            <div style="color: #888; font-size: 0.8rem; padding: 20px 0;">Loading credential archive...</div>
+                        </div>
+                    </section>
+                </div>
+
+                <!-- Credential Detail Drawer (hidden until a record is selected) -->
+                <div class="credential-drawer" id="credential-drawer" style="display: none;">
+                    <div class="drawer-header">
+                        <span id="drawer-vc-id" style="font-size: 0.7rem; color: #00ffcc; word-break: break-all;"></span>
+                        <button class="cyber-btn sm" id="btn-close-drawer" style="font-size: 0.6rem; padding: 2px 8px; flex-shrink: 0;">[ CLOSE ]</button>
+                    </div>
+                    <div class="drawer-body">
+                        <div style="font-size: 0.7rem; color: #888; margin-bottom: 5px;">// AI_INSIGHT</div>
+                        <div id="drawer-ai-insight" style="font-size: 0.82rem; color: #c0d0e0; margin-bottom: 15px; line-height: 1.6;"></div>
+                        <div style="font-size: 0.7rem; color: #888; margin-bottom: 5px;">// FILE_MANIFEST</div>
+                        <div id="drawer-file-paths" style="font-size: 0.75rem; color: #00ffcc88; line-height: 1.6; margin-bottom: 15px;"></div>
+                    </div>
+                    <div class="drawer-footer">
+                        <div style="display: flex; gap: 8px;">
+                            <button class="cyber-btn sm" id="btn-export-json" style="flex: 1;">[ EXPORT JSON RECEIPT ]</button>
+                            <button class="cyber-btn sm" id="btn-verify-sig" title="Cryptographically verify the Ed25519 signature on this credential" style="flex: 1; font-size: 0.65rem; border-color: rgba(0,255,204,0.35);">[ VERIFY SIGNATURE ]</button>
+                            <button class="cyber-btn sm revoke-btn" id="btn-revoke-credential" title="Soft-revoke this credential. The record is preserved in the database but removed from the active Ledger view.">[ REVOKE ]</button>
+                        </div>
+                        <div id="verify-sig-status" style="display:none; margin-top: 6px; font-size: 0.68rem; padding: 5px 10px; border-radius: 3px;"></div>
+                        <div id="revoke-status" style="display:none; margin-top: 8px; font-size: 0.7rem; padding: 5px 8px; border-radius: 3px;"></div>
+                    </div>
+                </div>
+            </div>
+
+        </main>
+
+        <!-- Resizable Divider -->
+        <div class="sidebar-resizer" id="sidebar-resizer"></div>
+
+        <!-- Right Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <button class="cyber-btn sm sidebar-toggle" id="btn-sidebar-toggle">[ &gt; ]</button>
+            <div class="sidebar-content" style="display: flex; flex-direction: column; height: 100%;">
+
+                <!-- TOP BLOCK: Static & Config Elements -->
+                <div class="sidebar-top-section" style="flex-shrink: 0;">
+
+                    <!-- Node Identity Plate -->
+                    <div class="identity-plate">
+                        <div class="identity-header">
+                            <span class="identity-label">// NODE IDENTITY</span>
+                            <div class="identity-actions">
+                                <span class="node-health" id="node-health">● SIGNAL: STRONG</span>
+                                <button class="icon-btn" id="btn-settings" title="Global Settings">⚙</button>
+                            </div>
+                        </div>
+                        <div class="did-row">
+                            <div id="node-did" class="did-text">Syncing...</div>
+                            <button class="copy-btn" id="btn-copy-did" title="Copy DID">⎘</button>
+                        </div>
+                        <div class="copy-toast" id="copy-toast">Copied!</div>
+                    </div>
+
+                    <!-- AI Context Engine (Custom Dropdown) -->
+                    <section class="config-panel" style="margin-bottom: 0;">
+                        <div class="input-group" style="margin-bottom: 15px;">
+                            <label>AI CONTEXT ENGINE <span id="ai-security-badge" style="float: right; color: #00ffcc; font-size: 0.6rem; margin-top: 2px;">[ 100% OFF-GRID ]</span></label>
+
+                            <!-- Custom cyber dropdown replaces native <select> -->
+                            <div class="cyber-select" id="cyber-select">
+                                <div class="cyber-select-trigger" id="cyber-select-trigger">
+                                    <span id="cyber-select-label">LOCAL::Ollama</span>
+                                    <span class="cyber-select-arrow">▾</span>
+                                </div>
+                                <div class="cyber-select-dropdown" id="cyber-select-dropdown">
+                                    <div class="cyber-select-option active" data-value="ollama">LOCAL::Ollama</div>
+                                    <div class="cyber-select-option" data-value="gemini">CLOUD::Gemini</div>
+                                    <div class="cyber-select-option" data-value="deepseek">CLOUD::DeepSeek</div>
+                                    <div class="cyber-select-option" data-value="qwen">CLOUD::Qwen</div>
+                                    <div class="cyber-select-option" data-value="minimax">CLOUD::MiniMax</div>
+                                    <div class="cyber-select-option" data-value="openai">CLOUD::OpenAI</div>
+                                    <div class="cyber-select-option" data-value="custom">CUSTOM::Endpoint</div>
+                                </div>
+                            </div>
+                            <!-- Hidden native select for form value compatibility -->
+                            <select id="ai-engine" style="display:none;">
+                                <option value="ollama">LOCAL::Ollama</option>
+                                <option value="gemini">CLOUD::Gemini</option>
+                                <option value="deepseek">CLOUD::DeepSeek</option>
+                                <option value="qwen">CLOUD::Qwen</option>
+                                <option value="minimax">CLOUD::MiniMax</option>
+                                <option value="openai">CLOUD::OpenAI</option>
+                                <option value="custom">CUSTOM::Endpoint</option>
+                            </select>
+
+                            <!-- Engine status indicator -->
+                            <div class="engine-status" id="engine-status">
+                                <span class="engine-dot" id="engine-dot">●</span>
+                                <span id="engine-status-text">Checking local service...</span>
+                            </div>
+                        </div>
+
+                        <div id="cloud-config-group" style="display: none;">
+                            <div class="input-group" style="margin-bottom: 15px;">
+                                <label>MODEL NAME</label>
+                                <input type="text" id="model-name" placeholder="e.g. gemini-2.5-flash / deepseek-chat..." value="gemini-2.0-flash" />
+                            </div>
+                            <div class="input-group" style="margin-bottom: 10px;">
+                                <label>API KEY</label>
+                                <input type="password" id="api-key" placeholder="Paste your API key here..." />
+                            </div>
+                            <div class="input-group" id="base-url-group" style="display: none; margin-bottom: 10px;">
+                                <label>BASE URL <span style="color: #888; font-size: 0.6rem;">(for Custom/DeepSeek)</span></label>
+                                <input type="text" id="base-url" placeholder="e.g. https://api.deepseek.com" />
+                            </div>
+                        </div>
+                    </section>
+                </div>
+
+                <!-- BOTTOM BLOCK: Workspaces (Fluid Flow) -->
+                <div class="sidebar-bottom-section" style="flex: 1; display: flex; flex-direction: column; min-height: 0; padding-top: 5px;">
+                    <div class="input-group" style="flex: 1; display: flex; flex-direction: column; min-height: 0; margin-bottom: 0;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <label style="margin-bottom: 0;">WORKSPACES (Drop to bind)</label>
+                            <button class="icon-btn flush-btn" id="btn-flush-stack" title="Clear all workspaces">✕ FLUSH</button>
+                        </div>
+                        <div class="workspace-stack" id="workspace-stack" style="flex: 1; overflow-y: auto; margin-bottom: 10px; padding-right: 5px;">
+                            <!-- Workspace blocks stream here -->
+                        </div>
+                        <button class="cyber-btn sm" id="btn-select-dir" style="width: 100%; border-style: dashed; flex-shrink: 0;">[ ADD TARGET ]</button>
+                    </div>
+                </div>
+
+            </div>
+        </aside>
+
+    </div>
+
+    <!-- ===== IDENTITY MANAGEMENT MODAL ===== -->
+    <div class="modal-overlay" id="identity-modal">
+        <div class="modal-box">
+            <div class="modal-header">
+                <span class="modal-title">// NODE_IDENTITY :: MANAGEMENT</span>
+                <button class="modal-close" id="btn-modal-close" title="Close">✕</button>
+            </div>
+            <div class="modal-body">
+
+                <!-- Export Section -->
+                <div class="modal-section">
+                    <div class="modal-section-title">⬇ EXPORT IDENTITY BUNDLE</div>
+                    <div class="modal-section-desc">Sets a backup password and exports an <strong>AES-256-GCM encrypted</strong> bundle. The file is completely useless without this password. Keep it safe alongside the file.<br><strong style="color:#ff9900;">&#x26A0; This password cannot be recovered. If lost, the bundle cannot be decrypted.</strong></div>
+                    <div class="pwd-field-group">
+                        <label class="pwd-label">BACKUP PASSWORD</label>
+                        <input type="password" class="pwd-input" id="export-pwd" placeholder="Set a strong backup password..." autocomplete="new-password">
+                    </div>
+                    <div class="pwd-field-group">
+                        <label class="pwd-label">CONFIRM PASSWORD</label>
+                        <input type="password" class="pwd-input" id="export-pwd-confirm" placeholder="Confirm your backup password..." autocomplete="new-password">
+                    </div>
+                    <button class="modal-btn" id="btn-export-identity">⬇ &nbsp;EXPORT (ENCRYPTED)</button>
+                    <div class="modal-status" id="export-status"></div>
+                </div>
+
+                <div class="modal-divider">── OR ──</div>
+
+                <!-- Import Section -->
+                <div class="modal-section">
+                    <div class="modal-section-title">⬆ IMPORT IDENTITY BUNDLE</div>
+                    <div class="modal-section-desc">Restore your identity from an encrypted bundle. Enter the backup password that was set when the bundle was exported. The system will verify key integrity before restoring.<br><strong style="color:#ff6666;">Note: A restart is required after import for the new identity to take effect.</strong></div>
+                    <div class="pwd-field-group">
+                        <label class="pwd-label">BUNDLE PASSWORD</label>
+                        <input type="password" class="pwd-input" id="import-pwd" placeholder="Enter the backup password used during export..." autocomplete="current-password">
+                    </div>
+                    <button class="modal-btn danger" id="btn-import-identity">⬆ &nbsp;SELECT BUNDLE &amp; IMPORT</button>
+                    <div class="modal-status" id="import-status"></div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <script src="./src/main.js" type="module"></script>
+</body>
+</html>
