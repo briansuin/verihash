@@ -6,6 +6,8 @@ export namespace main {
 	    model_name: string;
 	    api_key: string;
 	    base_url: string;
+	    auto_start: boolean;
+	    cloud_sync_dirs: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new Config(source);
@@ -18,6 +20,8 @@ export namespace main {
 	        this.model_name = source["model_name"];
 	        this.api_key = source["api_key"];
 	        this.base_url = source["base_url"];
+	        this.auto_start = source["auto_start"];
+	        this.cloud_sync_dirs = source["cloud_sync_dirs"];
 	    }
 	}
 	export class LedgerEntry {
@@ -28,6 +32,7 @@ export namespace main {
 	    file_paths: string;
 	    status: number;
 	    vc_hash: string;
+	    ai_engine: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new LedgerEntry(source);
@@ -42,6 +47,7 @@ export namespace main {
 	        this.file_paths = source["file_paths"];
 	        this.status = source["status"];
 	        this.vc_hash = source["vc_hash"];
+	        this.ai_engine = source["ai_engine"];
 	    }
 	}
 

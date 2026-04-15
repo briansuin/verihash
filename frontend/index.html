@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8"/>
     <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-    <title>VeriHash Nexus</title>
+    <title>VeriHash</title>
     <link rel="stylesheet" href="./src/style.css"/>
 </head>
 <body id="app-body">
@@ -13,19 +13,19 @@
     <div id="wallet-overlay" class="wallet-overlay" style="display:none;">
         <div class="wallet-box">
             <div class="wallet-logo">
-                <span class="blinking-cursor">_</span>VERIHASH::NEXUS
+                <span class="blinking-cursor">_</span>VERIHASH
             </div>
-            <div class="wallet-subtitle" id="wallet-subtitle">WALLET LOCKED</div>
+            <div class="wallet-subtitle" id="wallet-subtitle">VAULT LOCKED</div>
 
             <!-- UNLOCK screen (encrypted key) -->
             <div id="wallet-screen-unlock" class="wallet-screen" style="display:none;">
-                <p class="wallet-desc">Your identity key is encrypted. Enter your wallet password to continue.</p>
+                <p class="wallet-desc">Your identity key is encrypted. Enter your vault password to continue.</p>
                 <div class="pwd-field-group">
-                    <label class="pwd-label">WALLET PASSWORD</label>
+                    <label class="pwd-label">VAULT PASSWORD</label>
                     <input type="password" class="pwd-input wallet-pwd-input" id="wallet-unlock-pwd"
-                           placeholder="Enter wallet password..." autocomplete="current-password">
+                           placeholder="Enter VAULT PASSWORD..." autocomplete="current-password">
                 </div>
-                <button class="wallet-btn" id="btn-wallet-unlock">[ UNLOCK WALLET ]</button>
+                <button class="wallet-btn" id="btn-wallet-unlock">[ UNLOCK VAULT ]</button>
                 <div class="wallet-status" id="wallet-unlock-status"></div>
             </div>
 
@@ -43,29 +43,29 @@
             <!-- INIT screen (first run — new key) -->
             <div id="wallet-screen-init" class="wallet-screen" style="display:none;">
                 <p class="wallet-desc">Welcome! A new identity has been generated for you.<br>
-                Set a <strong>wallet password</strong> to encrypt it on disk. This password is required every time you open VeriHash.</p>
+                Set a <strong>VAULT PASSWORD</strong> to encrypt it on disk. This password is required every time you open VeriHash.</p>
                 <div class="pwd-field-group">
-                    <label class="pwd-label">SET WALLET PASSWORD</label>
+                    <label class="pwd-label">SET VAULT PASSWORD</label>
                     <input type="password" class="pwd-input wallet-pwd-input" id="wallet-init-pwd"
-                           placeholder="Set a strong wallet password..." autocomplete="new-password">
+                           placeholder="Set a strong VAULT PASSWORD..." autocomplete="new-password">
                 </div>
                 <div class="pwd-field-group">
                     <label class="pwd-label">CONFIRM PASSWORD</label>
                     <input type="password" class="pwd-input wallet-pwd-input" id="wallet-init-pwd-confirm"
                            placeholder="Confirm your password..." autocomplete="new-password">
                 </div>
-                <button class="wallet-btn" id="btn-wallet-init">[ INITIALIZE WALLET ]</button>
+                <button class="wallet-btn" id="btn-wallet-init">[ INITIALIZE VAULT ]</button>
                 <div class="wallet-status" id="wallet-init-status"></div>
             </div>
 
             <!-- MIGRATE screen (existing plaintext key) -->
             <div id="wallet-screen-migrate" class="wallet-screen" style="display:none;">
                 <p class="wallet-desc">Your key is currently stored <strong style="color:#ffaa00;">unencrypted</strong> on disk.<br>
-                Set a wallet password to encrypt it now. This is a one-time migration.</p>
+                Set a VAULT PASSWORD to encrypt it now. This is a one-time migration.</p>
                 <div class="pwd-field-group">
-                    <label class="pwd-label">NEW WALLET PASSWORD</label>
+                    <label class="pwd-label">NEW VAULT PASSWORD</label>
                     <input type="password" class="pwd-input wallet-pwd-input" id="wallet-migrate-pwd"
-                           placeholder="Set a strong wallet password..." autocomplete="new-password">
+                           placeholder="Set a strong VAULT PASSWORD..." autocomplete="new-password">
                 </div>
                 <div class="pwd-field-group">
                     <label class="pwd-label">CONFIRM PASSWORD</label>
@@ -88,7 +88,7 @@
             <!-- Header Section -->
             <header class="hud-header">
                 <div class="logo">
-                    <span class="blinking-cursor">_</span>VERIHASH::NEXUS
+                    <span class="blinking-cursor">_</span>VERIHASH
                 </div>
                 <!-- Dual-View Tab Navigation -->
                 <nav class="view-tabs">
@@ -145,6 +145,7 @@
                             <span>// CREDENTIAL_ARCHIVE > IMMUTABLE_LOG</span>
                             <div style="display: flex; gap: 6px;">
                                 <button class="cyber-btn sm" id="btn-verify-chain" style="font-size:0.6rem; padding: 2px 10px; border-color: rgba(0,255,204,0.4);">[ VERIFY CHAIN ]</button>
+                                <button class="cyber-btn sm" id="btn-restore-history" style="font-size:0.6rem; padding: 2px 10px; border-style: dotted;">[ RESTORE ]</button>
                                 <button class="cyber-btn sm" id="btn-refresh-ledger" style="font-size:0.6rem; padding: 2px 10px;">[ REFRESH ]</button>
                             </div>
                         </div>
@@ -170,7 +171,10 @@
                         <button class="cyber-btn sm" id="btn-close-drawer" style="font-size: 0.6rem; padding: 2px 8px; flex-shrink: 0;">[ CLOSE ]</button>
                     </div>
                     <div class="drawer-body">
-                        <div style="font-size: 0.7rem; color: #888; margin-bottom: 5px;">// AI_INSIGHT</div>
+                        <div style="font-size: 0.7rem; color: #888; margin-bottom: 5px; display: flex; justify-content: space-between;">
+                            <span>// AI_INSIGHT</span>
+                            <span id="drawer-ai-engine" style="color: rgba(0,255,204,0.6);"></span>
+                        </div>
                         <div id="drawer-ai-insight" style="font-size: 0.82rem; color: #c0d0e0; margin-bottom: 15px; line-height: 1.6;"></div>
                         <div style="font-size: 0.7rem; color: #888; margin-bottom: 5px;">// FILE_MANIFEST</div>
                         <div id="drawer-file-paths" style="font-size: 0.75rem; color: #00ffcc88; line-height: 1.6; margin-bottom: 15px;"></div>
@@ -178,6 +182,7 @@
                     <div class="drawer-footer">
                         <div style="display: flex; gap: 8px;">
                             <button class="cyber-btn sm" id="btn-export-json" style="flex: 1;">[ EXPORT JSON RECEIPT ]</button>
+                            <button class="cyber-btn sm" id="btn-generate-html" style="flex: 1;">[ GENERATE HTML REPORT ]</button>
                             <button class="cyber-btn sm" id="btn-verify-sig" title="Cryptographically verify the Ed25519 signature on this credential" style="flex: 1; font-size: 0.65rem; border-color: rgba(0,255,204,0.35);">[ VERIFY SIGNATURE ]</button>
                             <button class="cyber-btn sm revoke-btn" id="btn-revoke-credential" title="Soft-revoke this credential. The record is preserved in the database but removed from the active Ledger view.">[ REVOKE ]</button>
                         </div>
@@ -207,6 +212,7 @@
                             <div class="identity-actions">
                                 <span class="node-health" id="node-health">● SIGNAL: STRONG</span>
                                 <button class="icon-btn" id="btn-settings" title="Global Settings">⚙</button>
+                                <button class="icon-btn lock-btn" id="btn-lock" title="Lock Identity Vault" style="color: #ff6666;">🔒</button>
                             </div>
                         </div>
                         <div class="did-row">
@@ -300,18 +306,33 @@
             </div>
             <div class="modal-body">
 
+                <!-- Application Settings -->
+                <div class="modal-section">
+                    <div class="modal-section-title">⚙ APPLICATION LIFECYCLE</div>
+                    <div style="display: flex; align-items: center; gap: 10px; margin-top: 10px;">
+                        <input type="checkbox" id="chk-autostart" style="accent-color: #00ffcc; width: 16px; height: 16px; cursor: pointer;">
+                        <label for="chk-autostart" style="font-size: 0.8rem; color: #aaa; cursor: pointer;">Launch VeriHash silently on Windows Startup</label>
+                    </div>
+                </div>
+
+                <div class="modal-section" style="margin-top: 15px;">
+                    <div class="modal-section-title" style="display: flex; justify-content: space-between; align-items: center;">
+                        <span>☁ MULTI-CLOUD SYNC DIRECTORIES</span>
+                        <button class="cyber-btn sm" id="btn-add-sync-dir" style="font-size: 0.6rem; padding: 2px 6px;">[ + MAPPING ]</button>
+                    </div>
+                    <div class="modal-section-desc">Active paths where Minted Credentials AND original files will be automatically mirrored after a successful mint.</div>
+                    <div id="sync-dirs-container" style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px; max-height: 120px; overflow-y: auto;">
+                        <!-- Sync dirs rendered here by JS -->
+                        <div style="color: #666; font-size: 0.75rem; font-style: italic;">No cloud mirrors bound.</div>
+                    </div>
+                </div>
+
+                <div class="modal-divider">── IDENTITY SECRETS ──</div>
+
                 <!-- Export Section -->
                 <div class="modal-section">
                     <div class="modal-section-title">⬇ EXPORT IDENTITY BUNDLE</div>
-                    <div class="modal-section-desc">Sets a backup password and exports an <strong>AES-256-GCM encrypted</strong> bundle. The file is completely useless without this password. Keep it safe alongside the file.<br><strong style="color:#ff9900;">&#x26A0; This password cannot be recovered. If lost, the bundle cannot be decrypted.</strong></div>
-                    <div class="pwd-field-group">
-                        <label class="pwd-label">BACKUP PASSWORD</label>
-                        <input type="password" class="pwd-input" id="export-pwd" placeholder="Set a strong backup password..." autocomplete="new-password">
-                    </div>
-                    <div class="pwd-field-group">
-                        <label class="pwd-label">CONFIRM PASSWORD</label>
-                        <input type="password" class="pwd-input" id="export-pwd-confirm" placeholder="Confirm your backup password..." autocomplete="new-password">
-                    </div>
+                    <div class="modal-section-desc">Exports an <strong>AES-256-GCM encrypted</strong> identity bundle. The file will be automatically encrypted with your current **Vault Password**. The file is useless without this password.<br><strong style="color:#ff9900;">&#x26A0; Note: Use the current password when importing this bundle on another machine.</strong></div>
                     <button class="modal-btn" id="btn-export-identity">⬇ &nbsp;EXPORT (ENCRYPTED)</button>
                     <div class="modal-status" id="export-status"></div>
                 </div>
@@ -328,6 +349,31 @@
                     </div>
                     <button class="modal-btn danger" id="btn-import-identity">⬆ &nbsp;SELECT BUNDLE &amp; IMPORT</button>
                     <div class="modal-status" id="import-status"></div>
+                </div>
+
+                <div class="modal-divider">── OR ──</div>
+
+                <!-- Restore from Phrase Section -->
+                <div class="modal-section">
+                    <div class="modal-section-title" style="color:var(--warning);">⚠ RESTORE FROM RECOVERY PHRASE</div>
+                    <div class="modal-section-desc">Rebuild an identity mathematically using your original 12-word recovery phrase.<br><strong style="color:#ff6666;">This completely removes and replaces the current node identity! Set a new Vault Password to seal it.</strong></div>
+                    
+                    <div class="pwd-field-group">
+                        <label class="pwd-label">12-WORD MNEMONIC</label>
+                        <textarea class="pwd-input" id="mnemonic-input" rows="2" placeholder="Paste your 12 words here separated by spaces..." style="resize:none; padding:10px; font-family:var(--font-mono);"></textarea>
+                    </div>
+
+                    <div class="pwd-field-group">
+                        <label class="pwd-label">NEW VAULT PASSWORD</label>
+                        <input type="password" class="pwd-input" id="restore-pwd" placeholder="Set a new vault password..." autocomplete="new-password">
+                    </div>
+                    <div class="pwd-field-group">
+                        <label class="pwd-label">CONFIRM PASSWORD</label>
+                        <input type="password" class="pwd-input" id="restore-pwd-confirm" placeholder="Confirm new vault password..." autocomplete="new-password">
+                    </div>
+
+                    <button class="modal-btn danger" id="btn-restore-mnemonic" style="border-color:var(--warning); color:var(--warning);">⚠ &nbsp;RESTORE NODE IDENTITY</button>
+                    <div class="modal-status" id="restore-status"></div>
                 </div>
 
             </div>

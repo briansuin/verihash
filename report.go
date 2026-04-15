@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/flosch/pongo2/v6"
@@ -53,9 +52,17 @@ const reportTemplate = `
             font-size: 0.9rem;
             opacity: 0.8;
         }
+        .section-header {
+            color: #00ffcc;
+            font-size: 0.75rem;
+            font-weight: bold;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
         .insight {
             background: rgba(0, 255, 204, 0.05);
-            padding: 20px;
+            padding: 10px 20px;
             border-left: 4px solid #00ffcc;
             font-size: 1.05rem;
             line-height: 1.6;
@@ -99,7 +106,11 @@ const reportTemplate = `
         
         <h2 style="color: #fff; margin-top: 0;">{{ projectContext }}</h2>
         
-        <div class="insight">{{ insight }}</div>
+        <div class="section-header">[ AI INSIGHT ]</div>
+        <div class="insight">
+            <div style="font-size: 0.75rem; color: #00ffcc; margin-bottom: 4px; text-align: right; opacity: 0.8;">[ ENGINE: {{ aiEngine }} ]</div>
+            <div style="text-indent: 0;">{{ insight }}</div>
+        </div>
         
         <div class="badges">
             {% for tag in tags %}
@@ -119,7 +130,7 @@ const reportTemplate = `
 `
 
 // GenerateReport renders a standalone HTML file from a Minted VC
-func GenerateReport(vc VCSchema) error {
+func GenerateReport(vc VCSchema, customTitle string) error {
 	colorYellow := "\033[33m"
 	colorGreen := "\033[32m"
 	colorReset := "\033[0m"
@@ -131,10 +142,14 @@ func GenerateReport(vc VCSchema) error {
 		return fmt.Errorf("failed to parse template: %v", err)
 	}
 
-	// Extract project context (first file's dir roughly)
-	projectContext := "Unknown Workspace"
-	if len(vc.CredentialSubject.ProofOfWork.FilePaths) > 0 {
-		projectContext = filepath.Dir(vc.CredentialSubject.ProofOfWork.FilePaths[0])
+	// Extract project context: priority to customTitle, then filename
+	projectContext := customTitle
+	if projectContext == "" {
+		if len(vc.CredentialSubject.ProofOfWork.Files) > 0 {
+			projectContext = vc.CredentialSubject.ProofOfWork.Files[0].Name
+		} else {
+			projectContext = "Unknown Workspace"
+		}
 	}
 
 	// Parse insight and tags
@@ -157,11 +172,17 @@ func GenerateReport(vc VCSchema) error {
 		}
 	}
 
+	aiEngineLabel := vc.CredentialSubject.ProofOfWork.AIEngine
+	if aiEngineLabel == "" {
+		aiEngineLabel = "GENERIC::ORACLE"
+	}
+
 	out, err := tpl.Execute(pongo2.Context{
 		"issuanceDate":   vc.IssuanceDate,
 		"projectContext": projectContext,
 		"insight":        insight,
 		"tags":           tags,
+		"aiEngine":       aiEngineLabel,
 		"vcID":           vc.ID,
 		"issuer":         vc.Issuer,
 		"signature":      vc.Proof.ProofValue,

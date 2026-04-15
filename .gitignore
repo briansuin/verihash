@@ -25,7 +25,22 @@ go.sum
 # VeriHash Specific (Secrets)
 .node_secret.key
 node_identity.json
-nexus_config.json
+verihash_config.json
 verihash.db
+proof_of_work.db*
 *.encrypted.json
 *.bak
+
+# Logs and Data
+logs/
+exports/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+
+# Test Data
+TEST_DIR/
+test_workspace/
+test_files/

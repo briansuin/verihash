@@ -6,8 +6,20 @@ export function ExportCredentialJSON(arg1) {
   return window['go']['main']['App']['ExportCredentialJSON'](arg1);
 }
 
-export function ExportIdentityBundle(arg1) {
-  return window['go']['main']['App']['ExportIdentityBundle'](arg1);
+export function ExportIdentityBundle() {
+  return window['go']['main']['App']['ExportIdentityBundle']();
+}
+
+export function ExportSanitizedJSON(arg1) {
+  return window['go']['main']['App']['ExportSanitizedJSON'](arg1);
+}
+
+export function GenerateHTMLReport(arg1, arg2) {
+  return window['go']['main']['App']['GenerateHTMLReport'](arg1, arg2);
+}
+
+export function GenerateHistoricReports() {
+  return window['go']['main']['App']['GenerateHistoricReports']();
 }
 
 export function GetDID() {
@@ -16,6 +28,10 @@ export function GetDID() {
 
 export function GetLedger() {
   return window['go']['main']['App']['GetLedger']();
+}
+
+export function GetMnemonic() {
+  return window['go']['main']['App']['GetMnemonic']();
 }
 
 export function GetWalletStatus() {
@@ -30,24 +46,40 @@ export function ImportIdentityBundle(arg1, arg2) {
   return window['go']['main']['App']['ImportIdentityBundle'](arg1, arg2);
 }
 
+export function ImportMnemonic(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ImportMnemonic'](arg1, arg2, arg3);
+}
+
 export function InitWallet(arg1, arg2) {
   return window['go']['main']['App']['InitWallet'](arg1, arg2);
+}
+
+export function IsAutoStartEnabled() {
+  return window['go']['main']['App']['IsAutoStartEnabled']();
 }
 
 export function LoadConfig() {
   return window['go']['main']['App']['LoadConfig']();
 }
 
+export function LockVault() {
+  return window['go']['main']['App']['LockVault']();
+}
+
 export function MigrateWallet(arg1, arg2) {
   return window['go']['main']['App']['MigrateWallet'](arg1, arg2);
+}
+
+export function RestoreDataFromSync() {
+  return window['go']['main']['App']['RestoreDataFromSync']();
 }
 
 export function RevokeCredential(arg1) {
   return window['go']['main']['App']['RevokeCredential'](arg1);
 }
 
-export function SaveConfig(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['main']['App']['SaveConfig'](arg1, arg2, arg3, arg4, arg5);
+export function SaveConfig(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['SaveConfig'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
 export function SaveToFile(arg1, arg2) {
@@ -60,6 +92,14 @@ export function SelectDirectory() {
 
 export function StartWatchdog() {
   return window['go']['main']['App']['StartWatchdog']();
+}
+
+export function SyncHistoricLedger(arg1) {
+  return window['go']['main']['App']['SyncHistoricLedger'](arg1);
+}
+
+export function ToggleAutoStart(arg1) {
+  return window['go']['main']['App']['ToggleAutoStart'](arg1);
 }
 
 export function TriggerMint(arg1, arg2) {

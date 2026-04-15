@@ -928,8 +928,14 @@ input:focus, select:focus {
     box-shadow: 0 4px 16px rgba(0,0,0,0.7);
     animation: toast-in 0.15s ease;
 }
-.workspace-card:hover .workspace-tooltip {
+.workspace-card:hover .workspace-tooltip,
+.workspace-block:hover .workspace-tooltip {
     display: block;
+}
+
+.workspace-path:hover {
+    color: var(--primary) !important;
+    text-shadow: 0 0 8px rgba(0, 255, 204, 0.4);
 }
 
 /* ===== IDENTITY MODAL ===== */
@@ -952,6 +958,9 @@ input:focus, select:focus {
     border-radius: 6px;
     width: 480px;
     max-width: 90vw;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
     box-shadow: 0 0 40px rgba(0, 255, 204, 0.15), 0 20px 60px rgba(0,0,0,0.8);
     animation: modal-in 0.2s ease;
     overflow: hidden;
@@ -988,6 +997,8 @@ input:focus, select:focus {
     display: flex;
     flex-direction: column;
     gap: 12px;
+    overflow-y: auto;
+    flex: 1;
 }
 .modal-section {
     background: rgba(0, 255, 204, 0.03);

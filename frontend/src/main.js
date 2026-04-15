@@ -1,4 +1,4 @@
-import { SelectDirectory, SaveConfig, StartWatchdog, TriggerMint, GetDID, LoadConfig, GetWorkspaceFiles, GetLedger, ExportCredentialJSON, RevokeCredential, VerifyChain, VerifyCredential, ExportIdentityBundle, ImportIdentityBundle, SaveToFile, GetWalletStatus, UnlockWallet, InitWallet, MigrateWallet, GetMnemonic } from '../wailsjs/go/main/App';
+import { SelectDirectory, SaveConfig, StartWatchdog, TriggerMint, GetDID, LoadConfig, GetWorkspaceFiles, GetLedger, ExportCredentialJSON, ExportSanitizedJSON, RestoreDataFromSync, GenerateHTMLReport, RevokeCredential, VerifyChain, VerifyCredential, ExportIdentityBundle, ImportIdentityBundle, SaveToFile, GetWalletStatus, UnlockWallet, InitWallet, MigrateWallet, GetMnemonic, LockVault, ToggleAutoStart, IsAutoStartEnabled, ImportMnemonic, SyncHistoricLedger } from '../wailsjs/go/main/App';
 import { EventsOn, WindowGetSize, WindowSetSize, OnFileDrop } from '../wailsjs/runtime/runtime';
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -53,7 +53,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Check wallet state on startup
     const walletState = await GetWalletStatus();
     if (walletState === 'encrypted') {
-        showWalletScreen('wallet-screen-unlock', 'WALLET LOCKED');
+        showWalletScreen('wallet-screen-unlock', 'VAULT LOCKED');
         const btn = document.getElementById('btn-wallet-unlock');
         const status = document.getElementById('wallet-unlock-status');
         const pwd = document.getElementById('wallet-unlock-pwd');
@@ -83,7 +83,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
 
         btnNext.addEventListener('click', () => {
-            showWalletScreen('wallet-screen-init', 'INITIALIZE WALLET');
+            showWalletScreen('wallet-screen-init', 'INITIALIZE VAULT');
             const btn = document.getElementById('btn-wallet-init');
             const status = document.getElementById('wallet-init-status');
             const pwd = document.getElementById('wallet-init-pwd');
@@ -132,7 +132,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const sidebar = document.getElementById('sidebar');
     const btnSidebarToggle = document.getElementById('btn-sidebar-toggle');
 
-    // Custom dropdown references (must be declared here â€” used in boot sequence)
+    // Custom dropdown references (must be declared here --  used in boot sequence)
     const cyberSelect = document.getElementById('cyber-select');
     const cyberTrigger = document.getElementById('cyber-select-trigger');
     const cyberLabel = document.getElementById('cyber-select-label');
@@ -160,9 +160,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     const chainStatusLabel = document.getElementById('chain-status-label');
     const chainStats = document.getElementById('chain-stats');
     let activeVcId = null;
+    let activeProjectContext = ''; // Track current workspace name
+
+    // Cloud sync DOM refs (must be declared before boot sequence so renderSyncDirs works)
+    const syncDirsContainer = document.getElementById('sync-dirs-container');
+    const btnAddSyncDir = document.getElementById('btn-add-sync-dir');
 
     // M/D State
     let workspaces = [];
+    let cloudSyncDirs = [];
     let activeWorkspace = null;
 
     // Boot Sequence
@@ -172,6 +178,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         const cfg = await LoadConfig();
         if (cfg.workspaces) workspaces = cfg.workspaces;
+        if (cfg.cloud_sync_dirs) cloudSyncDirs = cfg.cloud_sync_dirs;
         if (cfg.ai_engine) {
             aiEngineSelect.value = cfg.ai_engine;
             // Sync custom dropdown label from saved config
@@ -190,6 +197,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         renderWorkspaces();
+        renderSyncDirs();
         // Manually apply engine-specific UI state before triggering change,
         // so syncConfig doesn't overwrite correct values with UI defaults.
         if (cfg.ai_engine && cfg.ai_engine !== 'ollama') {
@@ -251,10 +259,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         const model = modelNameInput ? modelNameInput.value : '';
         const baseUrlInput = document.getElementById('base-url');
         const baseUrl = baseUrlInput ? baseUrlInput.value : '';
-        await SaveConfig(workspaces, engine, model, key, baseUrl);
+        await SaveConfig(workspaces, engine, model, key, baseUrl, cloudSyncDirs);
     }
 
-    // AI Engine change handler â€” supports all 5 providers
+    // AI Engine change handler --  supports all 5 providers
     aiEngineSelect.addEventListener('change', (e) => {
         const engine = e.target.value;
         const securityBadge = document.getElementById('ai-security-badge');
@@ -295,6 +303,71 @@ document.addEventListener('DOMContentLoaded', async () => {
     const baseUrlInput2 = document.getElementById('base-url');
     if (baseUrlInput2) baseUrlInput2.addEventListener('change', syncConfig);
 
+    // ======== CLOUD SYNC MECHANICS ========
+
+    function renderSyncDirs() {
+        if (!syncDirsContainer) return;
+        syncDirsContainer.innerHTML = '';
+        if (cloudSyncDirs.length === 0) {
+            syncDirsContainer.innerHTML = '<div style="color: #666; font-size: 0.75rem; font-style: italic;">No cloud mirrors bound.</div>';
+            return;
+        }
+        cloudSyncDirs.forEach((dir, i) => {
+            const block = document.createElement('div');
+            block.className = 'workspace-block';
+            block.style.display = 'flex';
+            block.style.justifyContent = 'space-between';
+            block.style.alignItems = 'center';
+            block.style.padding = '8px 10px';
+            block.style.position = 'relative'; // For tooltip positioning
+            block.innerHTML = `
+                <div class="workspace-path" title="Click to copy full path" style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-right:10px; cursor:pointer; color:var(--primary); transition:all 0.2s;">☁ ${dir}</div>
+                <div class="workspace-tooltip" style="bottom: 100%; left: 10px; margin-bottom: 5px;">${dir}</div>
+                <button class="cyber-btn sm danger" data-index="${i}" style="font-size: 0.55rem; padding: 2px 6px;">[ UNBIND ]</button>
+            `;
+            
+            const pathEl = block.querySelector('.workspace-path');
+            pathEl.addEventListener('click', async () => {
+                try {
+                    await navigator.clipboard.writeText(dir);
+                    const originalText = pathEl.innerText;
+                    pathEl.innerText = '\u2713 COPIED!';
+                    pathEl.style.color = '#fff';
+                    setTimeout(() => {
+                        pathEl.innerText = originalText;
+                        pathEl.style.color = 'var(--primary)';
+                    }, 1000);
+                } catch (err) {
+                    console.error('Copy failed:', err);
+                }
+            });
+
+            const unbindBtn = block.querySelector('button');
+            unbindBtn.addEventListener('click', () => {
+                cloudSyncDirs.splice(i, 1);
+                renderSyncDirs();
+                syncConfig();
+            });
+            syncDirsContainer.appendChild(block);
+        });
+    }
+
+    if (btnAddSyncDir) {
+        btnAddSyncDir.addEventListener('click', async () => {
+            const dir = await SelectDirectory();
+            if (!dir) return;
+            // Add to list and update UI immediately (non-blocking)
+            if (!cloudSyncDirs.includes(dir)) {
+                cloudSyncDirs.push(dir);
+                renderSyncDirs();
+                syncConfig();
+            }
+            // Kick off historic repair in background (fire-and-forget)
+            SyncHistoricLedger(dir).catch(e => console.error('[CLOUD-SYNC] Historic sync error:', e));
+        });
+    }
+
+
     // M/D Workspace Mechanics
     function renderWorkspaces() {
         workspaceStack.innerHTML = '';
@@ -305,7 +378,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             card.innerHTML = `
                 <div class="path-text">.../${baseName}</div>
                 <div class="workspace-tooltip">${ws}</div>
-                <button class="btn-remove">Ã—</button>
+                <button class="btn-remove">&times;</button>
             `;
             card.addEventListener('click', (e) => {
                 if(e.target.classList.contains('btn-remove')) {
@@ -383,7 +456,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function addWorkspace(dir) {
         if (!workspaces.includes(dir)) {
-            workspaces.push(dir);
+            workspaces.unshift(dir);
             await syncConfig();
             appendLog(`[SYSTEM] Workspace Hooked: ${dir}`, 'sys');
             StartWatchdog();
@@ -431,16 +504,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (vc.error) {
                     appendLog(`[ORACLE ERROR] ${vc.error}`, 'err');
                 } else {
-                    appendLog('\nâš¡ SESSION CREDENTIAL MINTED âš¡', 'sys');
+        appendLog('\n\u2605\u2605\u2605 SESSION CREDENTIAL MINTED \u2605\u2605\u2605', 'sys');
                     appendLog(`[VC_ID]  ${vc.id}`, 'sys');
                     appendLog(`[ISSUER] ${vc.issuer?.substring(0, 60)}...`, 'sys');
                     appendLog(`[DATE]   ${vc.issuanceDate}`, 'sys');
                     appendLog(`[FILES]  ${vc.credentialSubject?.proofOfWork?.filePaths?.length || 0} files anchored`, 'sys');
-                    appendLog(`\nâ†’ View full credential in [ THE_LEDGER ] tab`, 'sys');
+        appendLog('\n\u2192 View full credential in [ THE_LEDGER ] tab', 'sys');
                 }
             } catch {
                 // Fallback: show raw if parse fails
-                appendLog('\nâš¡ SESSION CREDENTIAL MINTED âš¡', 'sys');
+        appendLog('\n\u2605\u2605\u2605 SESSION CREDENTIAL MINTED \u2605\u2605\u2605', 'sys');
                 appendLog(resultJSON.substring(0, 300) + '...', 'sys');
             }
         } catch (err) {
@@ -570,10 +643,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const res = await fetch('http://localhost:11434', { signal: AbortSignal.timeout(3000) });
                 const ms = Date.now() - start;
                 engineDot.className = 'engine-dot online';
-                engineStatusText.innerText = `LOCAL node online Â· ${ms}ms`;
+            engineStatusText.innerText = `LOCAL node online \u2022 ms`;
             } catch {
                 engineDot.className = 'engine-dot offline';
-                engineStatusText.innerText = 'LOCAL node offline â€” start Ollama';
+            engineStatusText.innerText = 'LOCAL node offline -- start Ollama';
             }
         } else {
             // For cloud, we just verify API key is set
@@ -595,7 +668,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Initial check on boot
     setTimeout(() => checkEngineStatus(aiEngineSelect.value), 1200);
 
-    // ======== P3: SETTINGS GEAR â€” IDENTITY MODAL ========
+    // ======== P3: SETTINGS GEAR -- IDENTITY MODAL ========
     const btnSettings = document.getElementById('btn-settings');
     const identityModal = document.getElementById('identity-modal');
     const btnModalClose = document.getElementById('btn-modal-close');
@@ -615,6 +688,32 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     if (btnSettings) btnSettings.addEventListener('click', openIdentityModal);
     if (btnModalClose) btnModalClose.addEventListener('click', closeIdentityModal);
+    
+    // Toggle Auto-Start logic
+    const chkAutoStart = document.getElementById('chk-autostart');
+    IsAutoStartEnabled().then(enabled => {
+        if(chkAutoStart) chkAutoStart.checked = enabled;
+    });
+    if (chkAutoStart) {
+        chkAutoStart.addEventListener('change', async (e) => {
+            try {
+                await ToggleAutoStart(e.target.checked);
+            } catch (err) {
+                console.error("AutoStart Toggle failed:", err);
+                chkAutoStart.checked = !e.target.checked; // Revert visually
+            }
+        });
+    }
+
+    // Lock Vault logic
+    const btnLock = document.getElementById('btn-lock');
+    if (btnLock) {
+        btnLock.addEventListener('click', async () => {
+            await LockVault();
+            location.reload(); // Native reload gracefully enters locked state
+        });
+    }
+
     // Close on overlay click
     if (identityModal) {
         identityModal.addEventListener('click', (e) => {
@@ -674,7 +773,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!chainStatusBar) return;
         chainStatusBar.className = 'chain-status-bar';
         chainStatusIcon.className = 'chain-status-icon checking';
-        chainStatusIcon.innerText = 'â§—';
+        chainStatusIcon.innerText = '\u29d7'; // hourglass
         chainStatusLabel.innerText = 'Verifying chain integrity...';
         chainStats.innerText = '';
         try {
@@ -683,7 +782,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (r.intact) {
                 chainStatusBar.classList.add('intact');
                 chainStatusIcon.className = 'chain-status-icon intact';
-                chainStatusIcon.innerText = 'â›“';
+        chainStatusIcon.innerText = '\u26d3'; // chains
                 chainStatusLabel.innerText = 'CHAIN INTACT';
                 const parts = [];
                 if (r.total_blocks > 0) {
@@ -691,20 +790,20 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (r.revoked_blocks > 0) parts.push(`${r.revoked_blocks} REVOKED`);
                     parts.push(`${r.total_blocks} TOTAL BLOCKS`);
                 }
-                chainStats.innerText = parts.length ? 'Â· ' + parts.join(' Â· ') + ' Â· ' + r.message : r.message;
+                chainStats.innerText = parts.length ? '\u00b7 ' + parts.join(' \u00b7 ') + ' \u00b7 ' + r.message : r.message;
             } else {
                 chainStatusBar.classList.add('broken');
                 chainStatusIcon.className = 'chain-status-icon broken';
-                chainStatusIcon.innerText = 'âš ';
+                chainStatusIcon.innerText = '\u26a0'; // warning
                 chainStatusLabel.innerText = 'CHAIN INTEGRITY FAILURE';
                 const breakInfo = r.break_at_vc_id
                     ? `break at: ${r.break_at_vc_id.substring(9, 25)}...`
                     : '';
-                chainStats.innerText = r.message + (breakInfo ? ' Â· ' + breakInfo : '');
+                chainStats.innerText = r.message + (breakInfo ? ' \u00b7 ' + breakInfo : '');
             }
         } catch(e) {
             chainStatusIcon.className = 'chain-status-icon broken';
-            chainStatusIcon.innerText = 'âš ';
+            chainStatusIcon.innerText = '\u26a0'; // warning
             chainStatusLabel.innerText = 'VERIFY ERROR';
             chainStats.innerText = String(e);
         }
@@ -722,7 +821,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const entries = await GetLedger();
             ledgerContainer.innerHTML = '';
             if (!entries || entries.length === 0) {
-                ledgerContainer.innerHTML = '<div style="color:#888; font-size:0.8rem; padding:20px 0;">[ LEDGER EMPTY ] â€” No credentials have been minted yet.</div>';
+                ledgerContainer.innerHTML = '<div style="color:#888; font-size:0.8rem; padding:20px 0;">[ LEDGER EMPTY ] --  No credentials have been minted yet.</div>';
                 return;
             }
             entries.forEach(entry => {
@@ -751,7 +850,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     <div>
                         <div class="ledger-project">${projectName}</div>
                         <div class="ledger-insight-preview">${insightPreview}</div>
-                        ${entry.vc_hash ? `<div class="ledger-vc-hash">â›“ ${entry.vc_hash.substring(0, 32)}...</div>` : ''}
+                        ${entry.vc_hash ? `<div class="ledger-vc-hash">\u00bb  ${entry.vc_hash.substring(0, 32)}...</div>` : ''}
                     </div>
                     <div class="ledger-badge">${fileCount} files</div>
                 `;
@@ -767,6 +866,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     // ======== CREDENTIAL DRAWER ========
     function openDrawer(entry) {
         activeVcId = entry.vc_id;
+        activeProjectContext = entry.project_context 
+            ? entry.project_context.split(/[\/\\]/).pop() 
+            : 'Unknown Workspace';
+
         // Highlight selected row
         document.querySelectorAll('.ledger-entry').forEach(r => r.classList.remove('selected'));
         const selectedRow = ledgerContainer.querySelector(`[data-vc-id="${entry.vc_id}"]`);
@@ -774,6 +877,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         drawerVcId.innerText = entry.vc_id;
         drawerAiInsight.innerText = entry.ai_insight || 'No AI insight recorded.';
+        const drawerAiEngine = document.getElementById('drawer-ai-engine');
+        if (drawerAiEngine) {
+            drawerAiEngine.innerText = entry.ai_engine ? '[ ' + entry.ai_engine + ' ]' : '';
+        }
 
         const paths = entry.file_paths
             ? entry.file_paths.split(',').map(f => f.trim()).filter(Boolean)
@@ -793,16 +900,73 @@ document.addEventListener('DOMContentLoaded', async () => {
     btnExportJson.addEventListener('click', async () => {
         if (!activeVcId) return;
         try {
-            const json = await ExportCredentialJSON(activeVcId);
+            // Use ExportSanitizedJSON for the Public UI to keep full paths private
+            const json = await ExportSanitizedJSON(activeVcId);
             const parsed = JSON.parse(json);
             if (parsed.error) { alert('Export failed: ' + parsed.error); return; }
-            const defaultName = `verihash_credential_${activeVcId.substring(0, 16)}.json`;
+            const safeVcId = activeVcId.replace(/[:\\/*?"<>|]/g, '_').substring(0, 24);
+            const defaultName = `verihash_credential_${safeVcId}.json`;
             const result = JSON.parse(await SaveToFile(defaultName, json));
             if (result.error) alert('Save failed: ' + result.error);
         } catch(e) {
             alert('Export failed: ' + e);
         }
     });
+
+    // ======== RESTORE FROM SYNC ========
+    const btnRestoreHistory = document.getElementById('btn-restore-history');
+    if (btnRestoreHistory) {
+        btnRestoreHistory.addEventListener('click', async () => {
+            btnRestoreHistory.innerText = '[ SCANNING... ]';
+            btnRestoreHistory.disabled = true;
+            try {
+                const resJSON = await RestoreDataFromSync();
+                const res = JSON.parse(resJSON);
+                if (res.error) {
+                    alert('Restoration error: ' + res.error);
+                } else {
+                    alert(`Data Reconstruction Complete!\n\nFound: ${res.found} blocks\nRestored: ${res.restored} new records.`);
+                    // Refresh current view if we're in the ledger
+                    if (viewLedger.style.display !== 'none') {
+                        renderLedger();
+                    }
+                }
+            } catch (e) {
+                alert('Connection failure during restore: ' + e);
+            } finally {
+                btnRestoreHistory.innerText = '[ RESTORE ]';
+                btnRestoreHistory.disabled = false;
+            }
+        });
+    }
+
+    // ======== GENERATE HTML REPORT ========
+    const btnGenerateHtml = document.getElementById('btn-generate-html');
+    if (btnGenerateHtml) {
+        btnGenerateHtml.addEventListener('click', async () => {
+            if (!activeVcId) return;
+
+            const customTitle = window.prompt("Enter Report Title:", activeProjectContext);
+            if (customTitle === null) return; // User cancelled
+
+            btnGenerateHtml.innerText = '[ RENDERING... ]';
+            btnGenerateHtml.disabled = true;
+            try {
+                const resJSON = await GenerateHTMLReport(activeVcId, customTitle);
+                const res = JSON.parse(resJSON);
+                if (res.error) {
+                    alert('HTML Generation failed: ' + res.error);
+                } else {
+                    alert('Professional Audit Report generated successfully!\n\nCheck the "exports" folder in your VeriHash directory.');
+                }
+            } catch(e) {
+                alert('Connection failure: ' + e);
+            } finally {
+                btnGenerateHtml.innerText = '[ GENERATE HTML REPORT ]';
+                btnGenerateHtml.disabled = false;
+            }
+        });
+    }
 
     // ======== VERIFY SIGNATURE ========
     const btnVerifySig = document.getElementById('btn-verify-sig');
@@ -821,12 +985,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                     verifySigStatus.style.background = 'rgba(0,255,204,0.06)';
                     verifySigStatus.style.color = 'var(--primary)';
                     verifySigStatus.style.border = '1px solid rgba(0,255,204,0.25)';
-                    verifySigStatus.innerText = '\u2713 SIGNATURE VALID â€” Ed25519 proof verified against issuer DID';
+        verifySigStatus.innerText = '\u2713 SIGNATURE VALID \u2014 Ed25519 proof verified against issuer DID';
                 } else {
                     verifySigStatus.style.background = 'rgba(255,85,0,0.08)';
                     verifySigStatus.style.color = 'var(--warning)';
                     verifySigStatus.style.border = '1px solid rgba(255,85,0,0.4)';
-                    verifySigStatus.innerText = '\u2715 SIGNATURE INVALID â€” ' + (result.error || 'Verification failed');
+        verifySigStatus.innerText = '\u2715 SIGNATURE INVALID \u2014 ' + (result.error || 'Verification failed');
                 }
             } catch(e) {
                 verifySigStatus.style.display = 'block';
@@ -850,7 +1014,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 `ID: ${shortId}\n\n` +
                 `This credential will be removed from the active Ledger.\n` +
                 `The underlying record is preserved in the database\n` +
-                `to maintain hash chain integrity â€” it cannot be read\n` +
+                `to maintain hash chain integrity --  it cannot be read\n` +
                 `or displayed again without direct DB access.\n\n` +
                 `Proceed?`
             );
@@ -869,7 +1033,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     revokeStatus.innerText = '\u2715 Revoke failed: ' + result.error;
                     return;
                 }
-                // Success â€” show brief confirmation then close drawer and refresh
+    // Success -- show brief confirmation then close drawer and refresh
                 revokeStatus.style.display = 'block';
                 revokeStatus.style.background = 'rgba(0,255,204,0.06)';
                 revokeStatus.style.color = 'var(--primary)';
@@ -896,33 +1060,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     // ======== IDENTITY BUNDLE EXPORT ========
     if (btnExportIdentity) {
         btnExportIdentity.addEventListener('click', async () => {
-            const exportPwd = document.getElementById('export-pwd').value;
-            const exportPwdConfirm = document.getElementById('export-pwd-confirm').value;
             exportStatus.className = 'modal-status';
             exportStatus.innerText = '';
-
-            if (!exportPwd) {
-                exportStatus.className = 'modal-status err';
-                exportStatus.innerText = '\u2715 A backup password is required.';
-                document.getElementById('export-pwd').focus();
-                return;
-            }
-            if (exportPwd.length < 8) {
-                exportStatus.className = 'modal-status err';
-                exportStatus.innerText = '\u2715 Password must be at least 8 characters.';
-                return;
-            }
-            if (exportPwd !== exportPwdConfirm) {
-                exportStatus.className = 'modal-status err';
-                exportStatus.innerText = '\u2715 Passwords do not match.';
-                document.getElementById('export-pwd-confirm').focus();
-                return;
-            }
 
             btnExportIdentity.innerText = 'Encrypting... (may take a moment)';
             btnExportIdentity.disabled = true;
             try {
-                const bundleJSON = await ExportIdentityBundle(exportPwd);
+                const bundleJSON = await ExportIdentityBundle(); // No args needed now
                 const parsed = JSON.parse(bundleJSON);
                 if (parsed.error) {
                     exportStatus.className = 'modal-status err';
@@ -940,9 +1084,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     exportStatus.innerText = '';
                 } else {
                     exportStatus.className = 'modal-status ok';
-                    exportStatus.innerText = '\u2713 Encrypted bundle saved. Remember your backup password \u2014 it cannot be recovered.';
-                    document.getElementById('export-pwd').value = '';
-                    document.getElementById('export-pwd-confirm').value = '';
+                    exportStatus.innerText = '\u2713 Encrypted bundle saved. It is encrypted with your current Vault Password.';
                 }
             } catch(e) {
                 exportStatus.className = 'modal-status err';
@@ -1004,6 +1146,64 @@ document.addEventListener('DOMContentLoaded', async () => {
                 document.body.removeChild(fileInput);
             });
             fileInput.click();
+        });
+    }
+
+    // ======== MNEMONIC RESTORE ========
+    const btnRestoreMnemonic = document.getElementById('btn-restore-mnemonic');
+    if (btnRestoreMnemonic) {
+        btnRestoreMnemonic.addEventListener('click', async () => {
+            const mnemonic = document.getElementById('mnemonic-input').value.trim();
+            const newPwd = document.getElementById('restore-pwd').value;
+            const confirm = document.getElementById('restore-pwd-confirm').value;
+            const statusEl = document.getElementById('restore-status');
+
+            statusEl.className = 'modal-status';
+            statusEl.innerText = '';
+
+            if (!mnemonic) {
+                statusEl.className = 'modal-status err';
+                statusEl.innerText = '\u2715 Please enter your 12-word recovery phrase.';
+                return;
+            }
+            if (newPwd.length < 8) {
+                statusEl.className = 'modal-status err';
+                statusEl.innerText = '\u2715 New password must be at least 8 characters.';
+                return;
+            }
+            if (newPwd !== confirm) {
+                statusEl.className = 'modal-status err';
+                statusEl.innerText = '\u2715 Passwords do not match.';
+                return;
+            }
+
+            btnRestoreMnemonic.innerHTML = '\u2699\u00a0REBUILDING IDENTITY...';
+            btnRestoreMnemonic.disabled = true;
+
+            try {
+                const resultJSON = await ImportMnemonic(mnemonic, newPwd, confirm);
+                const result = JSON.parse(resultJSON);
+                if (result.error) {
+                    statusEl.className = 'modal-status err';
+                    statusEl.innerText = '\u2715 Failed: ' + result.error;
+                } else {
+                    statusEl.className = 'modal-status ok';
+                    statusEl.innerHTML = `\u2713 Identity Restored Successfully!<br>DID: <span style="color:#00cc88;font-size:0.65rem;word-break:break-all;">${result.did || ''}</span><br><br>Restarting node...`;
+                    
+                    document.getElementById('mnemonic-input').value = '';
+                    document.getElementById('restore-pwd').value = '';
+                    document.getElementById('restore-pwd-confirm').value = '';
+                    
+                    // Gracefully reboot the UI space because crypto layers in Wails are reset.
+                    setTimeout(() => location.reload(), 2500);
+                }
+            } catch (e) {
+                statusEl.className = 'modal-status err';
+                statusEl.innerText = '\u2715 ' + e;
+            } finally {
+                btnRestoreMnemonic.innerHTML = '\u26A0 \u00a0RESTORE NODE IDENTITY';
+                btnRestoreMnemonic.disabled = false;
+            }
         });
     }
 

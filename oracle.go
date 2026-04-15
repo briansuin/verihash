@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -32,6 +35,7 @@ type VCSchema struct {
 	Issuer            string            `json:"issuer"`
 	IssuanceDate      string            `json:"issuanceDate"`
 	CredentialSubject CredentialSubject `json:"credentialSubject"`
+	LocalMetadata     *LocalMetadata    `json:"localMetadata,omitempty"`
 	Proof             Proof             `json:"proof"`
 }
 
@@ -40,11 +44,27 @@ type CredentialSubject struct {
 	ProofOfWork ProofOfWork `json:"proofOfWork"`
 }
 
+// FileManifest is the privacy-safe file record stored in the VC.
+// Names in the signed manifest are basenames only — full paths are moved to
+// the non-signed LocalMetadata block for backup recovery.
+type FileManifest struct {
+	Name   string `json:"name"`   // basename only, e.g. "contract.pdf"
+	SHA256 string `json:"sha256"` // hex-encoded SHA-256 of the file content
+}
+
+// LocalMetadata holds non-signed environment data (like full paths)
+// that allow 100% accurate reconstruction of a node's state during restore.
+// IMPORTANT: This struct is EXCLUDED from VCSigningPayload.
+type LocalMetadata struct {
+	FullPaths []string `json:"full_paths,omitempty"`
+}
+
 type ProofOfWork struct {
-	TimestampRange []float64 `json:"timestampRange"`
-	FilePaths      []string  `json:"filePaths"`
-	AIEvaluation   string    `json:"aiEvaluation"`
-	HashChainRoot  string    `json:"hashChainRoot"`
+	TimestampRange []float64      `json:"timestampRange"`
+	Files          []FileManifest `json:"files"`
+	AIEngine       string         `json:"aiEngine"` // e.g. "GEMINI::gemini-2.5-flash"
+	AIEvaluation   string         `json:"aiEvaluation"`
+	HashChainRoot  string         `json:"hashChainRoot"`
 }
 
 type Proof struct {
@@ -141,7 +161,9 @@ func MintCredential(ctx context.Context, db *VeriHashDB, pubKey ed25519.PublicKe
 	const maxCharsPerFile = 3000  // ~750 tokens per file
 	const maxTotalChars  = 60000  // ~15K tokens total hard cap
 	var contextBuilder strings.Builder
-	var filePaths []string
+	seenPaths := map[string]bool{}
+	var fullPaths []string     // kept for DB storage only — never goes into VC
+	var fileManifest []FileManifest // name+hash — goes into the signed VC
 	var minTs, maxTs float64 = snapshots[0].Timestamp, snapshots[0].Timestamp
 	latestHash := snapshots[0].CurrentHash
 	totalChars := 0
@@ -150,16 +172,14 @@ func MintCredential(ctx context.Context, db *VeriHashDB, pubKey ed25519.PublicKe
 		if s.Timestamp < minTs { minTs = s.Timestamp }
 		if s.Timestamp > maxTs { maxTs = s.Timestamp }
 
-		// Uniquify file paths
-		found := false
-		for _, f := range filePaths {
-			if f == s.FilePath { found = true; break }
-		}
-		if !found {
-			filePaths = append(filePaths, s.FilePath)
+		// Uniquify by full path (for DB), build manifest entry per unique file
+		if !seenPaths[s.FilePath] {
+			seenPaths[s.FilePath] = true
+			fullPaths = append(fullPaths, s.FilePath)
+			fileManifest = append(fileManifest, buildFileManifest(s.FilePath))
 		}
 
-		// Truncate each file's contribution
+		// Truncate each file's contribution (use basename in AI context, not full path)
 		excerpt := s.ContentDiff
 		if len(excerpt) > maxCharsPerFile {
 			excerpt = excerpt[:maxCharsPerFile] + "\n...[TRUNCATED]"
@@ -167,22 +187,37 @@ func MintCredential(ctx context.Context, db *VeriHashDB, pubKey ed25519.PublicKe
 
 		// Global cap: stop appending when budget is hit
 		if totalChars+len(excerpt) > maxTotalChars {
-			contextBuilder.WriteString(fmt.Sprintf("--- File: %s ---\n[BUDGET EXCEEDED — OMITTED]\n\n", s.FilePath))
+			contextBuilder.WriteString(fmt.Sprintf("--- File: %s ---\n[BUDGET EXCEEDED — OMITTED]\n\n", filepath.Base(s.FilePath)))
 			break
 		}
 
-		contextBuilder.WriteString(fmt.Sprintf("--- File: %s ---\nContent:\n%s\n\n", s.FilePath, excerpt))
+		// Use basename only in AI prompt — no paths leave the machine
+		contextBuilder.WriteString(fmt.Sprintf("--- File: %s ---\nContent:\n%s\n\n", filepath.Base(s.FilePath), excerpt))
 		totalChars += len(excerpt)
 	}
 
-	runtime.EventsEmit(ctx, "log", map[string]string{"msg": fmt.Sprintf("[ORACLE] Context assembled: ~%d chars / %d files", totalChars, len(filePaths)), "type": "sys"})
+	runtime.EventsEmit(ctx, "log", map[string]string{"msg": fmt.Sprintf("[ORACLE] Context assembled: ~%d chars / %d files", totalChars, len(fullPaths)), "type": "sys"})
 
 	// 3. Call AI Engine
-	prompt := fmt.Sprintf(`You are a legal document analyst and work-certification auditor. 
-Review the following document file manifest and content excerpts, then summarize the work evidenced.
+	prompt := fmt.Sprintf(`You are a professional Work-Certification Auditor and Multi-disciplinary Analyst.
+Review the following document manifest and content excerpts to provide a high-precision audit summary of the professional work evidenced.
+
+CRITICAL LANGUAGE RULE:
+ALL output (Audit Summary and Skill Tags) MUST be written strictly in ENGLISH, regardless of the source document language.
+
+CRITICAL PRIVACY RULE:
+NEVER mention specific proper nouns, real company names, client names, or distinct individual names.
+Always use generalized classifications (e.g., "a software service provider", "a commercial entity", "a third-party stakeholder").
+
 Output strictly in this format:
 [WORKLOAD AUDIT]
-(1-2 paragraph summary of the legal/professional work represented by these documents)
+(Provide a 2-paragraph analytical summary in ENGLISH. In your analysis, precisely identify:
+1. The INDUSTRY/DOMAIN of the work (e.g., Software Engineering, Creative Design, Corporate Management).
+2. The TECHNICAL or PROFESSIONAL SCOPE addressed (e.g., Backend Scaling, UI/UX Refinement, Financial Compliance).
+3. The NATURE of the contribution (e.g., Optimization, Strategic Planning, Document Auditing).
+4. The TYPES of stakeholders or entities involved (e.g., Enterprise Client, Individual End-user, Institutional Partner).
+Adhere strictly to privacy rules.)
+
 [VERIFIED SKILL TAGS]
 * tag1
 * tag2
@@ -255,14 +290,21 @@ FILE MANIFEST:
 	}
 
 	if err != nil {
-		runtime.EventsEmit(ctx, "log", map[string]string{"msg": fmt.Sprintf("[ORACLE ERROR] AI engine failed: %v", err), "type": "err"})
-		return fmt.Sprintf(`{"error": "AI engine failed: %v"}`, err)
+		errMsg := fmt.Sprintf("AI engine failed: %v", err)
+		runtime.EventsEmit(ctx, "log", map[string]string{"msg": "[ORACLE ERROR] " + errMsg, "type": "err"})
+		errBytes, _ := json.Marshal(map[string]string{"error": errMsg})
+		return string(errBytes)
 	}
 
 	// 4. Forge Verifiable Credential
 	vcID := "urn:uuid:" + computeSHA256(fmt.Sprintf("%d", time.Now().UnixNano()))
 	issuerDID := pubKeyToDIDKey(pubKey)  // W3C did:key format
 	nowISO := time.Now().Format(time.RFC3339)
+
+	aiEngineUsed := strings.ToUpper(provider)
+	if modelName != "" {
+		aiEngineUsed += "::" + modelName
+	}
 
 	vc := VCSchema{
 		Context: []string{"https://www.w3.org/2018/credentials/v1"},
@@ -274,10 +316,14 @@ FILE MANIFEST:
 			ID: issuerDID,
 			ProofOfWork: ProofOfWork{
 				TimestampRange: []float64{minTs, maxTs},
-				FilePaths:      filePaths,
+				Files:          fileManifest, // name + sha256 only — no full paths
+				AIEngine:       aiEngineUsed,
 				AIEvaluation:   aiResult,
 				HashChainRoot:  latestHash,
 			},
+		},
+		LocalMetadata: &LocalMetadata{
+			FullPaths: fullPaths,
 		},
 	}
 
@@ -317,8 +363,9 @@ FILE MANIFEST:
 	// 6. Save credential to the Ledger database
 	// vc_hash = SHA256(vc_id | prevVCHash | full_signed_json)
 	vcHash := computeSHA256(vcID + "|" + prevVCHash + "|" + string(finalJSON))
-
-	filePathsStr := strings.Join(filePaths, ",")
+	
+	// Store full paths in local DB for the user's own reference
+	filePathsStr := strings.Join(fullPaths, ",")
 	_, dbErr := db.conn.Exec(`
 		INSERT OR IGNORE INTO session_credentials
 		(vc_id, timestamp, project_context, ai_insight, skill_tags, file_paths, full_vc_json, status, vc_hash, prev_vc_hash)
@@ -339,9 +386,6 @@ FILE MANIFEST:
 	} else {
 		runtime.EventsEmit(ctx, "log", map[string]string{"msg": fmt.Sprintf("[ORACLE] Credential anchored to chain \u2713 | Block hash: %s...", vcHash[:16]), "type": "sys"})
 	}
-
-	// 7. Generate Physical Cyber-Card
-	GenerateReport(vc)
 
 	return string(finalJSON)
 }
@@ -396,6 +440,22 @@ func verifyCredentialDoc(vcJSON string) (bool, string) {
 	}
 	return true, ""
 }
+
+// buildFileManifest creates a privacy-safe file record containing only the
+// file's basename and its SHA-256 content hash. Full paths never leave the machine.
+func buildFileManifest(fullPath string) FileManifest {
+	h := sha256.New()
+	f, err := os.Open(fullPath)
+	if err == nil {
+		_, _ = io.Copy(h, f)
+		f.Close()
+	}
+	return FileManifest{
+		Name:   filepath.Base(fullPath),
+		SHA256: hex.EncodeToString(h.Sum(nil)),
+	}
+}
+
 
 func getLatestSnapshots(db *VeriHashDB, limit int) ([]Snapshot, error) {
 	rows, err := db.conn.Query("SELECT id, timestamp, file_path, content_diff, current_hash, previous_hash FROM file_snapshots ORDER BY id DESC LIMIT ?", limit)

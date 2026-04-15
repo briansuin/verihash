@@ -61,7 +61,17 @@ func initCrypto() (ed25519.PublicKey, ed25519.PrivateKey, WalletStatus, string, 
 
 	if len(data) > 0 && data[0] == '{' {
 		// Encrypted bundle format — caller must call loadEncryptedKey(password)
-		return nil, nil, WalletStatusEncrypted, "", nil
+		// Try to load public key from identity file to show DID even when locked
+		var pub ed25519.PublicKey
+		if idData, err := os.ReadFile(identityFile); err == nil {
+			var id NodeIdentity
+			if json.Unmarshal(idData, &id) == nil {
+				if pkBytes, err := hex.DecodeString(id.PublicKey); err == nil {
+					pub = ed25519.PublicKey(pkBytes)
+				}
+			}
+		}
+		return pub, nil, WalletStatusEncrypted, "", nil
 	}
 
 	// Legacy plaintext hex format — load it and signal migration needed
@@ -94,6 +104,17 @@ func generateNewKeyPair() (ed25519.PublicKey, ed25519.PrivateKey, string, error)
 	publicKey := privateKey.Public().(ed25519.PublicKey)
 	printMnemonicWarning(mnemonic)
 	return publicKey, privateKey, mnemonic, nil
+}
+
+// restoreKeypairFromMnemonic mathematically reconstructs an Ed25519 keypair from a 12-word phrase.
+func restoreKeypairFromMnemonic(mnemonic string) (ed25519.PublicKey, ed25519.PrivateKey, error) {
+	if !bip39.IsMnemonicValid(mnemonic) {
+		return nil, nil, fmt.Errorf("invalid or unrecognized recovery phrase")
+	}
+	seed := bip39.NewSeed(mnemonic, "")
+	privateKey := ed25519.NewKeyFromSeed(seed[:ed25519.SeedSize])
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+	return publicKey, privateKey, nil
 }
 
 // generateNewKeys generates a new keypair and saves it as PLAINTEXT (legacy fallback).
@@ -340,7 +361,7 @@ func encryptBundleData(plaintext []byte, password, did string) ([]byte, error) {
 		Ciphertext: base64.StdEncoding.EncodeToString(ct),
 		DID:        did,
 		ExportedAt: time.Now().Format(time.RFC3339),
-		Note:       "VeriHash Nexus Encrypted Identity Bundle — requires backup password to import.",
+		Note:       "VeriHash Encrypted Identity Bundle — requires backup password to import.",
 	}
 	return json.MarshalIndent(bundle, "", "  ")
 }

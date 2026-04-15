@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/zalando/go-keyring"
 )
 
 // Config represents persistent application settings
@@ -21,7 +22,9 @@ type Config struct {
 	AIEngine   string   `json:"ai_engine"`
 	ModelName  string   `json:"model_name"`
 	APIKey     string   `json:"api_key"`
-	BaseURL    string   `json:"base_url"`
+	BaseURL        string   `json:"base_url"`
+	AutoStart      bool     `json:"auto_start"`
+	CloudSyncDirs  []string `json:"cloud_sync_dirs"`
 }
 
 // LedgerEntry is a summary row of a past minting session
@@ -33,6 +36,7 @@ type LedgerEntry struct {
 	FilePaths      string  `json:"file_paths"`
 	Status         int     `json:"status"`
 	VcHash         string  `json:"vc_hash"`
+	AiEngine       string  `json:"ai_engine"`
 }
 
 // App struct
@@ -47,7 +51,8 @@ type App struct {
 	aiEngine     string
 	modelName    string
 	apiKey       string
-	baseURL      string
+	baseURL       string
+	cloudSyncDirs []string
 }
 
 // NewApp creates a new App application struct
@@ -84,16 +89,42 @@ func (a *App) startup(ctx context.Context) {
 		a.pubKey = pubKey
 		a.privKey = privKey
 	case WalletStatusEncrypted:
-		// Key on disk is encrypted; wait for UnlockWallet() call from UI
-		a.pubKey = nil
-		a.privKey = nil
+		// Attempt Auto-Unlock from persistent Keyring
+		pwd, err := keyring.Get("VeriHash", "vault_password")
+		if err == nil && pwd != "" {
+			pubKey, privKey, err := loadEncryptedKey(pwd)
+			if err == nil {
+				a.pubKey = pubKey
+				a.privKey = privKey
+			} else {
+				a.pubKey = pubKey // Keep pubKey for DID display
+				a.privKey = nil   // Stay locked
+			}
+		} else {
+			// Key on disk is encrypted; wait for UnlockWallet() call from UI
+			a.pubKey = pubKey // Keep pubKey for DID display
+			a.privKey = nil
+		}
 	case WalletStatusPlaintext:
 		// Legacy plaintext key loaded; UI will prompt migration
 		a.pubKey = pubKey
 		a.privKey = privKey
 	}
 
-	runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[SYSTEM] Booting VeriHash Nexus Core...", "type": "sys"})
+	setupSystemTray(ctx)
+	runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[SYSTEM] Booting VeriHash Core...", "type": "sys"})
+
+	// 3. Load config so cloudSyncDirs are available at startup
+	a.LoadConfig()
+
+	// 4. Silently repair the historic JSON chain on all bound cloud directories in background
+	if len(a.cloudSyncDirs) > 0 {
+		go func() {
+			for _, dir := range a.cloudSyncDirs {
+				a.SyncHistoricLedger(dir)
+			}
+		}()
+	}
 }
 
 // GetWalletStatus returns the wallet state for the frontend to act on.
@@ -138,6 +169,9 @@ func (a *App) InitWallet(password, confirm string) string {
 	if err := saveEncryptedKeyFile(a.privKey, a.pubKey, password); err != nil {
 		return `{"error": "Failed to save encrypted key: ` + err.Error() + `"}`
 	}
+	// Securely park token in OS keychain for auto-boot
+	keyring.Set("VeriHash", "vault_password", password)
+	
 	a.walletStatus = WalletStatusEncrypted
 	did := pubKeyToDIDKey(a.pubKey)
 	runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[SYSTEM] Wallet initialized with encryption. Identity: " + did[:32] + "...", "type": "sys"})
@@ -156,6 +190,10 @@ func (a *App) UnlockWallet(password string) string {
 	a.pubKey = pubKey
 	a.privKey = privKey
 	a.walletStatus = WalletStatusEncrypted // stays encrypted on disk
+	
+	// Securely park token in OS keychain for auto-boot
+	keyring.Set("VeriHash", "vault_password", password)
+	
 	did := pubKeyToDIDKey(pubKey)
 	runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[SYSTEM] Identity Loaded: " + did[:32] + "...", "type": "sys"})
 	return `{"status": "unlocked", "did": "` + did + `"}`
@@ -181,6 +219,9 @@ func (a *App) MigrateWallet(password, confirm string) string {
 	if err := saveEncryptedKeyFile(a.privKey, a.pubKey, password); err != nil {
 		return `{"error": "Failed to encrypt key file: ` + err.Error() + `"}`
 	}
+	// Securely park token in OS keychain for auto-boot
+	keyring.Set("VeriHash", "vault_password", password)
+	
 	a.walletStatus = WalletStatusEncrypted
 	did := pubKeyToDIDKey(a.pubKey)
 	runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[SYSTEM] Key file migrated to encrypted format.", "type": "sys"})
@@ -195,6 +236,13 @@ func (a *App) GetMnemonic() string {
 	return m
 }
 
+// LockVault manually locks the workspace and removes auto-boot keychain tokens.
+func (a *App) LockVault() string {
+	a.privKey = nil // Only clear private security context
+	keyring.Delete("VeriHash", "vault_password")
+	return `{"status": "locked"}`
+}
+
 // GetDID returns the W3C-compliant did:key identifier for this node
 func (a *App) GetDID() string {
 	if a.pubKey != nil {
@@ -206,7 +254,7 @@ func (a *App) GetDID() string {
 // LoadConfig loads memory from disk
 func (a *App) LoadConfig() Config {
 	var cfg Config
-	bytes, err := os.ReadFile("nexus_config.json")
+	bytes, err := os.ReadFile("verihash_config.json")
 	if err == nil {
 		json.Unmarshal(bytes, &cfg)
 		a.watchDirs = cfg.Workspaces
@@ -214,6 +262,7 @@ func (a *App) LoadConfig() Config {
 		a.modelName = cfg.ModelName
 		a.apiKey = cfg.APIKey
 		a.baseURL = cfg.BaseURL
+		a.cloudSyncDirs = cfg.CloudSyncDirs
 	}
 	return cfg
 }
@@ -230,22 +279,31 @@ func (a *App) SelectDirectory() string {
 }
 
 // SaveConfig stores the AI and UI configuration in memory and JSON disk
-func (a *App) SaveConfig(workspaces []string, engine, modelName, key, baseURL string) string {
+func (a *App) SaveConfig(workspaces []string, engine, modelName, key, baseURL string, cloudSyncDirs []string) string {
 	a.watchDirs = workspaces
 	a.aiEngine = engine
 	a.modelName = modelName
 	a.apiKey = key
 	a.baseURL = baseURL
+	a.cloudSyncDirs = cloudSyncDirs
+
+	// Preserve fields not managed by this call (e.g. AutoStart set by ToggleAutoStart)
+	var existingCfg Config
+	if existingBytes, err := os.ReadFile("verihash_config.json"); err == nil {
+		json.Unmarshal(existingBytes, &existingCfg)
+	}
 
 	cfg := Config{
-		Workspaces: workspaces,
-		AIEngine:   engine,
-		ModelName:  modelName,
-		APIKey:     key,
-		BaseURL:    baseURL,
+		Workspaces:    workspaces,
+		AIEngine:      engine,
+		ModelName:     modelName,
+		APIKey:        key,
+		BaseURL:       baseURL,
+		CloudSyncDirs: cloudSyncDirs,
+		AutoStart:     existingCfg.AutoStart, // preserve existing toggle state
 	}
 	bytes, _ := json.MarshalIndent(cfg, "", "  ")
-	os.WriteFile("nexus_config.json", bytes, 0644)
+	os.WriteFile("verihash_config.json", bytes, 0644)
 	return "OK"
 }
 
@@ -275,7 +333,20 @@ func (a *App) TriggerMint(selectedFiles []string, workspacePath string) string {
 	if a.aiEngine != "ollama" && a.modelName != "" {
 		engineParam = a.aiEngine + ":" + a.modelName
 	}
-	return MintCredential(a.ctx, a.db, a.pubKey, a.privKey, engineParam, a.apiKey, a.baseURL, selectedFiles, workspacePath)
+	result := MintCredential(a.ctx, a.db, a.pubKey, a.privKey, engineParam, a.apiKey, a.baseURL, selectedFiles, workspacePath)
+	
+	// If successful and we have Cloud Sync Dirs configured, trigger replication
+	if !strings.Contains(result, `"error":`) && len(a.cloudSyncDirs) > 0 {
+		var parseResult map[string]interface{}
+		if err := json.Unmarshal([]byte(result), &parseResult); err == nil {
+			// VC JSON uses "id" not "vc_id"
+			if vcID, ok := parseResult["id"].(string); ok {
+				go a.replicateToCloud(vcID, selectedFiles)
+			}
+		}
+	}
+	
+	return result
 }
 
 // GetWorkspaceFiles returns uniquely modified files for a requested workspace
@@ -322,7 +393,7 @@ func (a *App) GetWorkspaceFiles(workspace string) []string {
 // GetLedger returns all active credentials from the database, ordered newest first
 func (a *App) GetLedger() []LedgerEntry {
 	rows, err := a.db.conn.Query(`
-		SELECT vc_id, timestamp, project_context, ai_insight, file_paths, status, COALESCE(vc_hash, '')
+		SELECT vc_id, timestamp, project_context, ai_insight, file_paths, status, COALESCE(vc_hash, ''), full_vc_json
 		FROM session_credentials
 		WHERE status = 1
 		ORDER BY timestamp DESC
@@ -335,9 +406,17 @@ func (a *App) GetLedger() []LedgerEntry {
 	var entries []LedgerEntry
 	for rows.Next() {
 		var e LedgerEntry
-		if err := rows.Scan(&e.VcID, &e.Timestamp, &e.ProjectContext, &e.AiInsight, &e.FilePaths, &e.Status, &e.VcHash); err != nil {
+		var fullJsonStr string
+		if err := rows.Scan(&e.VcID, &e.Timestamp, &e.ProjectContext, &e.AiInsight, &e.FilePaths, &e.Status, &e.VcHash, &fullJsonStr); err != nil {
 			continue
 		}
+		
+		// Parse AI engine from full VC JSON
+		var vc VCSchema
+		if err := json.Unmarshal([]byte(fullJsonStr), &vc); err == nil {
+			e.AiEngine = vc.CredentialSubject.ProofOfWork.AIEngine
+		}
+
 		entries = append(entries, e)
 	}
 	return entries
@@ -362,7 +441,8 @@ func (a *App) VerifyChain() string {
 	return string(bytes)
 }
 
-// ExportCredentialJSON returns the full VC JSON for a given credential ID
+// ExportCredentialJSON returns the full VC JSON for a given credential ID.
+// IMPORTANT: This version contains Private Local Metadata (full paths).
 func (a *App) ExportCredentialJSON(vcID string) string {
 	var fullJSON string
 	err := a.db.conn.QueryRow(
@@ -374,6 +454,137 @@ func (a *App) ExportCredentialJSON(vcID string) string {
 	return fullJSON
 }
 
+// ExportSanitizedJSON returns a privacy-scrubbed version of the VC JSON.
+// It removes the localMetadata block (containing full paths) so it's safe for public sharing.
+func (a *App) ExportSanitizedJSON(vcID string) string {
+	rawJSON := a.ExportCredentialJSON(vcID)
+	if strings.Contains(rawJSON, `"error"`) {
+		return rawJSON
+	}
+
+	var vc VCSchema
+	if err := json.Unmarshal([]byte(rawJSON), &vc); err != nil {
+		return `{"error": "Failed to parse credential: ` + err.Error() + `"}`
+	}
+
+	// Scrub Private Data
+	vc.LocalMetadata = nil
+
+	sanitized, _ := json.MarshalIndent(vc, "", "  ")
+	return string(sanitized)
+}
+
+// RestoreDataFromSync deep-scans all linked cloud sync directories to reconstruct
+// the local SQLite ledger from discovered JSON credentials.
+func (a *App) RestoreDataFromSync() string {
+	if a.pubKey == nil {
+		return `{"error": "Identity is locked. Please unlock to verify and restore data."}`
+	}
+	currentDID := pubKeyToDIDKey(a.pubKey)
+	
+	totalFound := 0
+	totalRestored := 0
+	
+	for _, syncDir := range a.cloudSyncDirs {
+		archiveDir := filepath.Join(syncDir, "VeriHash_Archive")
+		if _, err := os.Stat(archiveDir); os.IsNotExist(err) {
+			continue
+		}
+
+		files, _ := os.ReadDir(archiveDir)
+		for _, f := range files {
+			if f.IsDir() || !strings.HasSuffix(f.Name(), ".json") {
+				continue
+			}
+			totalFound++
+
+			filePath := filepath.Join(archiveDir, f.Name())
+			data, err := os.ReadFile(filePath)
+			if err != nil { continue }
+
+			// 1. Cryptographic Verification
+			valid, _ := verifyCredentialDoc(string(data))
+			if !valid { continue }
+
+			// 2. Identity Match Check
+			var vc VCSchema
+			json.Unmarshal(data, &vc)
+			if vc.Issuer != currentDID { continue }
+
+			// 3. Check for existence in local DB
+			var exists int
+			a.db.conn.QueryRow(`SELECT COUNT(*) FROM session_credentials WHERE vc_id = ?`, vc.ID).Scan(&exists)
+			if exists > 0 { continue }
+
+			// 4. Reconstruction and Injection
+			// Extract paths from LocalMetadata (for personal reference) or fallback to Files manifest
+			pathStr := ""
+			if vc.LocalMetadata != nil && len(vc.LocalMetadata.FullPaths) > 0 {
+				pathStr = strings.Join(vc.LocalMetadata.FullPaths, ",")
+			} else {
+				var names []string
+				for _, f := range vc.CredentialSubject.ProofOfWork.Files {
+					names = append(names, f.Name)
+				}
+				pathStr = strings.Join(names, ",")
+			}
+
+			vcHash := computeSHA256(vc.ID + "|" + vc.Proof.PreviousVCHash + "|" + string(data))
+
+			_, dbErr := a.db.conn.Exec(`
+				INSERT INTO session_credentials
+				(vc_id, timestamp, project_context, ai_insight, skill_tags, file_paths, full_vc_json, status, vc_hash, prev_vc_hash)
+				VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+			`, 
+				vc.ID,
+				float64(time.Now().UnixNano())/1e9, // record approximate restoration time
+				"", // project context lost in JSON, but metadata could be expanded later
+				vc.CredentialSubject.ProofOfWork.AIEvaluation,
+				"",
+				pathStr,
+				string(data),
+				vcHash,
+				vc.Proof.PreviousVCHash,
+			)
+
+			if dbErr == nil {
+				totalRestored++
+			}
+		}
+	}
+
+	result := fmt.Sprintf(`{"found": %d, "restored": %d}`, totalFound, totalRestored)
+	runtime.EventsEmit(a.ctx, "log", map[string]string{
+		"msg": fmt.Sprintf("[RESTORE] Scan complete. %d records found, %d uniquely reconstructed.", totalFound, totalRestored),
+		"type": "sys",
+	})
+	return result
+}
+
+func (a *App) GenerateHistoricReports() {
+}
+
+// GenerateHTMLReport manually triggers the professional HTML report generation
+// for a historical credential stored in the ledger.
+func (a *App) GenerateHTMLReport(vcID string, customTitle string) string {
+	rawJSON := a.ExportCredentialJSON(vcID)
+	if strings.Contains(rawJSON, `"error"`) {
+		return rawJSON
+	}
+
+	var vc VCSchema
+	if err := json.Unmarshal([]byte(rawJSON), &vc); err != nil {
+		return `{"error": "Failed to parse credential: ` + err.Error() + `"}`
+	}
+
+	err := GenerateReport(vc, customTitle)
+	if err != nil {
+		return `{"error": "Failed to generate HTML: ` + err.Error() + `"}`
+	}
+
+	return `{"status": "OK"}`
+}
+
 // RevokeCredential soft-deletes a credential by setting status = 0.
 // The record remains in the database to preserve hash chain integrity.
 func (a *App) RevokeCredential(vcID string) string {
@@ -383,6 +594,14 @@ func (a *App) RevokeCredential(vcID string) string {
 	if err != nil {
 		return `{"error": "` + err.Error() + `"}`
 	}
+	
+	// Ensure cloud sync consistency: delete the revoked JSON from all mapped cloud drives
+	cleanVcID := strings.ReplaceAll(vcID, ":", "_")
+	for _, syncDir := range a.cloudSyncDirs {
+		jsonPath := filepath.Join(syncDir, "VeriHash_Archive", fmt.Sprintf("VeriHash_%s.json", cleanVcID))
+		_ = os.Remove(jsonPath) // silently ignore if file not found
+	}
+	
 	return `{"status": "OK"}`
 }
 
@@ -422,13 +641,19 @@ type IdentityBundle struct {
 	Note          string `json:"note"`
 }
 
-// ExportIdentityBundle encrypts the private key with the given backup password
-// and returns an AES-256-GCM encrypted bundle JSON. The bundle is useless
-// without the password, protecting against unauthorized export.
-func (a *App) ExportIdentityBundle(password string) string {
-	if password == "" {
-		return `{"error": "A backup password is required to export the identity bundle."}`
+// ExportIdentityBundle encrypts the private key with the current vault password
+// and returns an AES-256-GCM encrypted bundle JSON.
+func (a *App) ExportIdentityBundle() string {
+	if a.walletIsLocked() {
+		return `{"error": "Wallet is locked. Please unlock your vault before exporting."}`
 	}
+
+	// Retrieve current password from OS Keyring
+	password, err := keyring.Get("VeriHash", "vault_password")
+	if err != nil || password == "" {
+		return `{"error": "Could not retrieve vault password from secure storage. Please re-enter your password to unlock."}`
+	}
+
 	privHex, err := os.ReadFile(privateKeyFile)
 	if err != nil {
 		return `{"error": "Cannot read private key file. File may not exist."}`
@@ -448,7 +673,7 @@ func (a *App) ExportIdentityBundle(password string) string {
 		DID:           pubKeyToDIDKey(a.pubKey),
 		CreatedAt:     identity.CreatedAt,
 		ExportedAt:    time.Now().Format(time.RFC3339),
-		Note:          "VeriHash Nexus Identity Bundle — Keep this file safe and NEVER share it.",
+		Note:          "VeriHash Identity Bundle — Keep this file safe and NEVER share it.",
 	}
 	innerJSON, err := json.Marshal(inner)
 	if err != nil {
@@ -526,4 +751,111 @@ func (a *App) ImportIdentityBundle(jsonContent, password string) string {
 	}
 
 	return `{"status": "OK", "did": "` + derived + `"}`
+}
+
+// ImportMnemonic decrypts the BIP39 mathematical seed to restore an identity.
+// The new identity is then locally encrypted using the provided newPassword.
+func (a *App) ImportMnemonic(mnemonic, newPassword, confirm string) string {
+	if mnemonic == "" {
+		return `{"error": "Recovery phrase is required."}`
+	}
+	if newPassword == "" {
+		return `{"error": "A new vault password is required to encrypt the restored identity."}`
+	}
+	if len(newPassword) < 8 {
+		return `{"error": "Password must be at least 8 characters."}`
+	}
+	if newPassword != confirm {
+		return `{"error": "Passwords do not match."}`
+	}
+
+	pubKey, privKey, err := restoreKeypairFromMnemonic(mnemonic)
+	if err != nil {
+		return `{"error": "` + err.Error() + `"}`
+	}
+
+	// Backup existing keys before overwriting
+	if _, err := os.Stat(privateKeyFile); err == nil {
+		os.Rename(privateKeyFile, privateKeyFile+".bak")
+	}
+	if _, err := os.Stat(identityFile); err == nil {
+		os.Rename(identityFile, identityFile+".bak")
+	}
+
+	// Encrypt & Save new keys
+	err = saveEncryptedKeyFile(privKey, pubKey, newPassword)
+	if err != nil {
+		return `{"error": "Failed to encrypt restored key: ` + err.Error() + `"}`
+	}
+
+	// Refresh Context & OS Keyring
+	keyring.Set("VeriHash", "vault_password", newPassword)
+	
+	// Force the internal context to drop the running key and demand a restart, or just inject it.
+	// We'll return OK and let the frontend reboot.
+	return `{"status": "OK", "did": "` + pubKeyToDIDKey(pubKey) + `"}`
+}
+
+// replicateToCloud writes the signed JSON credential directly into the flat
+// VeriHash_Archive directory in each configured cloud sync folder.
+func (a *App) replicateToCloud(vcID string, sourceFiles []string) {
+	// Fetch the full constructed JSON from DB
+	var fullJsonStr string
+	err := a.db.conn.QueryRow(`SELECT full_vc_json FROM session_credentials WHERE vc_id = ?`, vcID).Scan(&fullJsonStr)
+	if err != nil || fullJsonStr == "" {
+		runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": fmt.Sprintf("[CLOUD-SYNC] Warning: Could not locate VC JSON for %s", vcID), "type": "err"})
+		return
+	}
+
+	cleanVcID := strings.ReplaceAll(vcID, ":", "_")
+
+	for _, syncDir := range a.cloudSyncDirs {
+		archiveDir := filepath.Join(syncDir, "VeriHash_Archive")
+		if err := os.MkdirAll(archiveDir, 0755); err != nil {
+			runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": fmt.Sprintf("[CLOUD-SYNC] Failed to create archive dir: %v", err), "type": "err"})
+			continue
+		}
+
+		jsonName := fmt.Sprintf("VeriHash_%s.json", cleanVcID)
+		_ = os.WriteFile(filepath.Join(archiveDir, jsonName), []byte(fullJsonStr), 0644)
+
+		runtime.EventsEmit(a.ctx, "log", map[string]string{
+			"msg":  fmt.Sprintf("[CLOUD-SYNC] ✓ Synced %s.json → %s", cleanVcID[:20]+"...", filepath.Base(syncDir)),
+			"type": "sys",
+		})
+	}
+}
+
+// SyncHistoricLedger extracts ALL previously minted VC JSONs from the database
+// and writes them flat into the VeriHash_Archive directory of the specified path.
+// This ensures the cryptographic PreviousVCHash chain is physically continuous
+// in the cloud even if the directory was bound after minting began.
+func (a *App) SyncHistoricLedger(targetDir string) string {
+	rows, err := a.db.conn.Query(`SELECT vc_id, full_vc_json FROM session_credentials WHERE status = 1`)
+	if err != nil {
+		return `{"error": "Failed to query historic ledger: ` + err.Error() + `"}`
+	}
+	defer rows.Close()
+
+	archiveDir := filepath.Join(targetDir, "VeriHash_Archive")
+	_ = os.MkdirAll(archiveDir, 0755)
+
+	count := 0
+	for rows.Next() {
+		var vcID, fullJsonStr string
+		if err := rows.Scan(&vcID, &fullJsonStr); err == nil && fullJsonStr != "" {
+			cleanVcID := strings.ReplaceAll(vcID, ":", "_")
+			jsonPath := filepath.Join(archiveDir, fmt.Sprintf("VeriHash_%s.json", cleanVcID))
+
+			// Only write if not already present
+			if _, statErr := os.Stat(jsonPath); os.IsNotExist(statErr) {
+				_ = os.WriteFile(jsonPath, []byte(fullJsonStr), 0644)
+				count++
+			}
+		}
+	}
+
+	msg := fmt.Sprintf("[CLOUD-SYNC] Historic chain repair complete: %d credential(s) pushed to %s", count, filepath.Base(targetDir))
+	runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": msg, "type": "sys"})
+	return fmt.Sprintf(`{"status": "OK", "synced": %d}`, count)
 }

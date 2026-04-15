@@ -1,9 +1,0 @@
-{
-    "watchdog_target_dir": "D:\\Google\\My Drive\\0project, D:\\Google\\My Drive\\0me\\0Share\\\u4e09\u4eba\u884c\\20251009\u8212\u5efa\u9752\u5efa\u5408\u540c\u5c71\u897f\u8def\u7ea0\u7eb7, G:\\.shortcut-targets-by-id\\1XVgoLCXVNp0oFuejjo79ZQJ1tD-H9eO0\\\u68a6\u4e4b\u961f2022\\20220621\u9752\u5c9b\u9ad8\u5b87\u73af\u4fdd\u79d1\u6280\u53d1\u5c55\u6709\u9650\u516c\u53f8\u6cd5\u5f8b\u987e\u95ee\uff08GY)\\20230316\u843d\u5b9e\u5408\u540c\uff08\u8bc9\u8bbc\uff09-\u5e94\u6536\u8d26\u6b3e\\\u5409\u6797\u5efa\u5de5\\\u6c11\u4e8b\u76d1\u7763\u7a0b\u5e8fBrian, D:\\Google\\My Drive\\0me\\Project2025\\AI algorithm contract dispute case",
-    "ai_mode": "cloud",
-    "local_model_name": "phi3",
-    "cloud_base_url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-    "cloud_model_name": "gemini-3.1-flash-lite-preview",
-    "cloud_api_key": "AIzaSyBWK4h7TdK1-baaYg1fiTwlpb3kMc2NtIE",
-    "last_minted_snapshot_id": 111
-}

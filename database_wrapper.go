@@ -63,10 +63,15 @@ type VeriHashDB struct {
 }
 
 func connectDB() (*VeriHashDB, error) {
-	db, err := sql.Open("sqlite", dbFile)
+	// _journal=WAL avoids writer/reader conflicts.
+	// _busy_timeout=5000 retries for up to 5s before returning SQLITE_BUSY.
+	// SetMaxOpenConns(1) ensures SQLite's single-writer model is respected.
+	dsn := dbFile + "?_journal=WAL&_busy_timeout=5000&_synchronous=NORMAL"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
+	db.SetMaxOpenConns(1)
 	return &VeriHashDB{conn: db}, nil
 }
 
