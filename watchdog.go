@@ -32,7 +32,7 @@ var (
 
 var previousContentCache = make(map[string]string)
 
-func startWatchdog(ctx context.Context, targetDir string, db *VeriHashDB, privKey []byte) {
+func startWatchdog(ctx context.Context, targetDir string, db *VeriHashDB, privKey []byte, ignoredPatterns []string, sessionIgnores []string) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		log.Printf("Fatal Error: Watchdog failed to initialize: %v", err)
@@ -50,9 +50,11 @@ func startWatchdog(ctx context.Context, targetDir string, db *VeriHashDB, privKe
 		}
 
 		if info.IsDir() {
-			baseName := info.Name()
-			if strings.HasPrefix(baseName, ".") && baseName != "." {
-				return // silently skip hidden directories like .git
+			if isPathIgnored(currentDir, ignoredPatterns) {
+				return
+			}
+			if isPathSessionIgnored(currentDir, targetDir, sessionIgnores) && !hasSessionExceptionInside(currentDir, targetDir, sessionIgnores) {
+				return // bypass excluded directories to save filesystem watchers entirely
 			}
 			
 			err = watcher.Add(currentDir)
@@ -64,8 +66,15 @@ func startWatchdog(ctx context.Context, targetDir string, db *VeriHashDB, privKe
 			entries, readErr := os.ReadDir(currentDir)
 			if readErr == nil {
 				for _, entry := range entries {
+					fullPath := filepath.Join(currentDir, entry.Name())
+					if isPathIgnored(fullPath, ignoredPatterns) {
+						continue
+					}
+					if !entry.IsDir() && isPathSessionIgnored(fullPath, targetDir, sessionIgnores) {
+						continue
+					}
 					if entry.IsDir() {
-						walkDir(filepath.Join(currentDir, entry.Name()))
+						walkDir(fullPath)
 					}
 				}
 			}
@@ -80,12 +89,18 @@ func startWatchdog(ctx context.Context, targetDir string, db *VeriHashDB, privKe
 			if !ok {
 				return
 			}
+			
+			// OS events bubble up. Safely ignore those explicitly rejected by UI or Global settings.
+			if isPathIgnored(event.Name, ignoredPatterns) || isPathSessionIgnored(event.Name, targetDir, sessionIgnores) {
+				continue
+			}
+
 			if event.Op&fsnotify.Write == fsnotify.Write {
 				handleFileWrite(ctx, event.Name, db, privKey)
 			}
 			if event.Op&fsnotify.Create == fsnotify.Create {
 				info, err := os.Stat(event.Name)
-				if err == nil && info.IsDir() && !strings.HasPrefix(info.Name(), ".") {
+				if err == nil && info.IsDir() {
 					// Recursively watch freshly pasted nested folders using the native symlink friendly walker
 					walkDir(event.Name)
 				}
@@ -178,4 +193,82 @@ func computeSHA256(data string) string {
 	h := sha256.New()
 	h.Write([]byte(data))
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// isPathSessionIgnored emulates the frontend JS cascade check loop safely in backend
+func isPathSessionIgnored(fullPath string, targetDir string, sessionIgnores []string) bool {
+	if len(sessionIgnores) == 0 {
+		return false
+	}
+	
+	if !strings.HasPrefix(strings.ToLower(fullPath), strings.ToLower(targetDir)) {
+		return false
+	}
+	
+	relPath := fullPath[len(targetDir):]
+	if len(relPath) > 0 && (relPath[0] == '/' || relPath[0] == '\\') {
+		relPath = relPath[1:]
+	}
+	if relPath == "" {
+		return false
+	}
+	
+	relPath = filepath.ToSlash(relPath)
+	parts := strings.Split(relPath, "/")
+	
+	currentDir := ""
+	shouldIgnore := false
+	
+	// Evaluate inherited directory rules exactly like UI algorithm deepest rule wins
+	for i := 0; i < len(parts)-1; i++ {
+		if currentDir != "" {
+			currentDir += "/"
+		}
+		currentDir += parts[i]
+		
+		for _, ignore := range sessionIgnores {
+			switch ignore {
+			case "DIR:" + currentDir:
+				shouldIgnore = true
+			case "EXCEPT:" + currentDir:
+				shouldIgnore = false
+			}
+		}
+	}
+	
+	// Explicit file/leaf checks
+	fileExcept := "EXCEPT:" + relPath
+	for _, ignore := range sessionIgnores {
+		if ignore == fileExcept {
+			shouldIgnore = false
+		} else if ignore == fullPath || ignore == filepath.ToSlash(fullPath) {
+			shouldIgnore = true
+		} else if strings.HasPrefix(ignore, "FILE:") {
+		    // FILE:relPath|fullPath format from frontend JS
+		    parts := strings.SplitN(ignore, "|", 2)
+		    if len(parts) == 2 && parts[1] == fullPath {
+		        shouldIgnore = true
+		    }
+		}
+	}
+	
+	return shouldIgnore
+}
+
+func hasSessionExceptionInside(fullPath string, targetDir string, sessionIgnores []string) bool {
+	if len(sessionIgnores) == 0 {
+		return false
+	}
+	relPath := fullPath[len(targetDir):]
+	if len(relPath) > 0 && (relPath[0] == '/' || relPath[0] == '\\') {
+		relPath = relPath[1:]
+	}
+	relPath = filepath.ToSlash(relPath)
+	
+	for _, rule := range sessionIgnores {
+		if strings.HasPrefix(rule, "EXCEPT:") && strings.HasPrefix(rule[7:], relPath+"/") {
+			return true
+		}
+	}
+	return false
 }

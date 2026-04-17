@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,13 +19,15 @@ import (
 
 // Config represents persistent application settings
 type Config struct {
-	Workspaces []string `json:"workspaces"`
-	AIEngine   string   `json:"ai_engine"`
-	ModelName  string   `json:"model_name"`
-	APIKey     string   `json:"api_key"`
-	BaseURL        string   `json:"base_url"`
-	AutoStart      bool     `json:"auto_start"`
-	CloudSyncDirs  []string `json:"cloud_sync_dirs"`
+	Workspaces    []string            `json:"workspaces"`
+	AIEngine      string              `json:"ai_engine"`
+	ModelName     string              `json:"model_name"`
+	APIKey        string              `json:"api_key"`
+	BaseURL       string              `json:"base_url"`
+	AutoStart     bool                `json:"auto_start"`
+	CloudSyncDirs []string            `json:"cloud_sync_dirs"`
+	IgnoredPatterns []string          `json:"ignored_patterns"`
+	SessionIgnores  map[string][]string `json:"session_ignores"`
 }
 
 // LedgerEntry is a summary row of a past minting session
@@ -41,18 +44,19 @@ type LedgerEntry struct {
 
 // App struct
 type App struct {
-	ctx          context.Context
-	db           *VeriHashDB
-	pubKey       ed25519.PublicKey
-	privKey      ed25519.PrivateKey
-	walletStatus WalletStatus // current key file state
-	mnemonic     string       // temporary storage for new wallet mnemonic
-	watchDirs    []string
-	aiEngine     string
-	modelName    string
-	apiKey       string
-	baseURL       string
-	cloudSyncDirs []string
+	ctx           context.Context
+	db            *VeriHashDB
+	pubKey        ed25519.PublicKey
+	privKey       ed25519.PrivateKey
+	walletStatus  WalletStatus // current key file state
+	mnemonic      string       // temporary storage for new wallet mnemonic
+	watchDirs     []string
+	aiEngine      string
+	modelName     string
+	apiKey        string
+	baseURL         string
+	cloudSyncDirs   []string
+	ignoredPatterns []string
 }
 
 // NewApp creates a new App application struct
@@ -171,7 +175,7 @@ func (a *App) InitWallet(password, confirm string) string {
 	}
 	// Securely park token in OS keychain for auto-boot
 	keyring.Set("VeriHash", "vault_password", password)
-	
+
 	a.walletStatus = WalletStatusEncrypted
 	did := pubKeyToDIDKey(a.pubKey)
 	runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[SYSTEM] Wallet initialized with encryption. Identity: " + did[:32] + "...", "type": "sys"})
@@ -190,10 +194,10 @@ func (a *App) UnlockWallet(password string) string {
 	a.pubKey = pubKey
 	a.privKey = privKey
 	a.walletStatus = WalletStatusEncrypted // stays encrypted on disk
-	
+
 	// Securely park token in OS keychain for auto-boot
 	keyring.Set("VeriHash", "vault_password", password)
-	
+
 	did := pubKeyToDIDKey(pubKey)
 	runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[SYSTEM] Identity Loaded: " + did[:32] + "...", "type": "sys"})
 	return `{"status": "unlocked", "did": "` + did + `"}`
@@ -221,7 +225,7 @@ func (a *App) MigrateWallet(password, confirm string) string {
 	}
 	// Securely park token in OS keychain for auto-boot
 	keyring.Set("VeriHash", "vault_password", password)
-	
+
 	a.walletStatus = WalletStatusEncrypted
 	did := pubKeyToDIDKey(a.pubKey)
 	runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[SYSTEM] Key file migrated to encrypted format.", "type": "sys"})
@@ -263,8 +267,42 @@ func (a *App) LoadConfig() Config {
 		a.apiKey = cfg.APIKey
 		a.baseURL = cfg.BaseURL
 		a.cloudSyncDirs = cfg.CloudSyncDirs
+		a.ignoredPatterns = cfg.IgnoredPatterns
 	}
 	return cfg
+}
+
+// isPathIgnored checks if a path should be skipped based on hidden status, 
+// system files, or manual exclusion patterns.
+func isPathIgnored(fullPath string, ignoredPatterns []string) bool {
+	// Standardize path slashes
+	cleanPath := filepath.ToSlash(fullPath)
+	parts := strings.Split(cleanPath, "/")
+
+	for _, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+
+		// 1. Hidden file/folder check (recursive)
+		if strings.HasPrefix(part, ".") && part != "." && part != ".." {
+			return true
+		}
+
+		// 2. System defaults (case-insensitive)
+		lowerPart := strings.ToLower(part)
+		if lowerPart == "desktop.ini" || lowerPart == "thumbs.db" || lowerPart == ".ds_store" {
+			return true
+		}
+
+		// 3. Manual exclusion patterns (case-insensitive)
+		for _, pattern := range ignoredPatterns {
+			if pattern != "" && strings.EqualFold(part, pattern) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // SelectDirectory opens the native OS directory selector
@@ -294,13 +332,15 @@ func (a *App) SaveConfig(workspaces []string, engine, modelName, key, baseURL st
 	}
 
 	cfg := Config{
-		Workspaces:    workspaces,
-		AIEngine:      engine,
-		ModelName:     modelName,
-		APIKey:        key,
-		BaseURL:       baseURL,
-		CloudSyncDirs: cloudSyncDirs,
-		AutoStart:     existingCfg.AutoStart, // preserve existing toggle state
+		Workspaces:      workspaces,
+		AIEngine:        engine,
+		ModelName:       modelName,
+		APIKey:          key,
+		BaseURL:         baseURL,
+		CloudSyncDirs:   cloudSyncDirs,
+		IgnoredPatterns: existingCfg.IgnoredPatterns, // preserve
+		AutoStart:       existingCfg.AutoStart,       // preserve
+		SessionIgnores:  existingCfg.SessionIgnores,  // preserve local filters
 	}
 	bytes, _ := json.MarshalIndent(cfg, "", "  ")
 	os.WriteFile("verihash_config.json", bytes, 0644)
@@ -315,10 +355,62 @@ func (a *App) StartWatchdog() string {
 	// Note: You must stop old watchdogs if restarting, but for now we launch new ones
 	// A proper implementation should manage watchdog lifecycles per directory.
 	for _, dir := range a.watchDirs {
-		go startWatchdog(a.ctx, dir, a.db, a.privKey)
+		var sessionIgnores []string
+		cfgIgnores := a.LoadSessionIgnores()
+		if cfgIgnores != nil && cfgIgnores[dir] != nil {
+			sessionIgnores = cfgIgnores[dir]
+		}
+		go startWatchdog(a.ctx, dir, a.db, a.privKey, a.ignoredPatterns, sessionIgnores)
 		runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[WATCHDOG] Active Target Hooked: " + filepath.Base(dir), "type": "sys"})
 	}
 	return "Started"
+}
+
+// UpdateIgnoredPatterns updates the manual exclusion list and saves to config
+func (a *App) UpdateIgnoredPatterns(patterns []string) string {
+	a.ignoredPatterns = patterns
+	
+	var cfg Config
+	bytes, err := os.ReadFile("verihash_config.json")
+	if err == nil {
+		json.Unmarshal(bytes, &cfg)
+	}
+	
+	cfg.IgnoredPatterns = patterns
+	out, _ := json.MarshalIndent(cfg, "", "  ")
+	os.WriteFile("verihash_config.json", out, 0644)
+
+	// Since watchdog doesn't easily support dynamic reload yet, we notify user
+	runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[SYSTEM] Ignored patterns updated. Changes will affect new scans.", "type": "sys"})
+	return "OK"
+}
+
+// LoadSessionIgnores retrieves the localized session exclusions from config
+func (a *App) LoadSessionIgnores() map[string][]string {
+	var cfg Config
+	if bytes, err := os.ReadFile("verihash_config.json"); err == nil {
+		json.Unmarshal(bytes, &cfg)
+		if cfg.SessionIgnores != nil {
+			return cfg.SessionIgnores
+		}
+	}
+	return make(map[string][]string)
+}
+
+// SaveSessionIgnores persists the UI dropdown exclusions map for a specific workspace
+func (a *App) SaveSessionIgnores(ws string, rules []string) string {
+	var cfg Config
+	if bytes, err := os.ReadFile("verihash_config.json"); err == nil {
+		json.Unmarshal(bytes, &cfg)
+	}
+	if cfg.SessionIgnores == nil {
+		cfg.SessionIgnores = make(map[string][]string)
+	}
+	cfg.SessionIgnores[ws] = rules
+
+	out, _ := json.MarshalIndent(cfg, "", "  ")
+	os.WriteFile("verihash_config.json", out, 0644)
+	return "OK"
 }
 
 // TriggerMint runs the Oracle evaluation for specifically checked files
@@ -334,18 +426,18 @@ func (a *App) TriggerMint(selectedFiles []string, workspacePath string) string {
 		engineParam = a.aiEngine + ":" + a.modelName
 	}
 	result := MintCredential(a.ctx, a.db, a.pubKey, a.privKey, engineParam, a.apiKey, a.baseURL, selectedFiles, workspacePath)
-	
+
 	// If successful and we have Cloud Sync Dirs configured, trigger replication
 	if !strings.Contains(result, `"error":`) && len(a.cloudSyncDirs) > 0 {
 		var parseResult map[string]interface{}
 		if err := json.Unmarshal([]byte(result), &parseResult); err == nil {
 			// VC JSON uses "id" not "vc_id"
 			if vcID, ok := parseResult["id"].(string); ok {
-				go a.replicateToCloud(vcID, selectedFiles)
+				go a.replicateToCloud(vcID)
 			}
 		}
 	}
-	
+
 	return result
 }
 
@@ -355,11 +447,11 @@ func (a *App) GetWorkspaceFiles(workspace string) []string {
 	if !strings.HasSuffix(workspacePath, "/") {
 		workspacePath += "/"
 	}
-	
+
 	runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": fmt.Sprintf("[DEBUG-TRACE] Resolving workspace: %s", workspacePath), "type": "sys"})
 
 	var finalFiles []string
-	
+
 	// Physically scan the actual disk so the UI shows ALL files, not just modified ones.
 	var scanDir func(string)
 	scanDir = func(currentDir string) {
@@ -368,12 +460,13 @@ func (a *App) GetWorkspaceFiles(workspace string) []string {
 			return
 		}
 		for _, entry := range entries {
-			// Skip hidden files/folders (e.g. .git, .idea)
-			if strings.HasPrefix(entry.Name(), ".") {
+			fullPath := filepath.Join(currentDir, entry.Name())
+			
+			// Use the new helper to skip hidden/system/manual patterns recursively
+			if isPathIgnored(fullPath, a.ignoredPatterns) {
 				continue
 			}
-			
-			fullPath := filepath.Join(currentDir, entry.Name())
+
 			if entry.IsDir() {
 				scanDir(fullPath)
 			} else {
@@ -382,9 +475,9 @@ func (a *App) GetWorkspaceFiles(workspace string) []string {
 			}
 		}
 	}
-	
+
 	scanDir(workspace)
-	
+
 	hitCount := len(finalFiles)
 	runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": fmt.Sprintf("[DEBUG-TRACE] Physical scan returned %d active files for UI", hitCount), "type": "sys"})
 	return finalFiles
@@ -410,7 +503,7 @@ func (a *App) GetLedger() []LedgerEntry {
 		if err := rows.Scan(&e.VcID, &e.Timestamp, &e.ProjectContext, &e.AiInsight, &e.FilePaths, &e.Status, &e.VcHash, &fullJsonStr); err != nil {
 			continue
 		}
-		
+
 		// Parse AI engine from full VC JSON
 		var vc VCSchema
 		if err := json.Unmarshal([]byte(fullJsonStr), &vc); err == nil {
@@ -481,10 +574,20 @@ func (a *App) RestoreDataFromSync() string {
 		return `{"error": "Identity is locked. Please unlock to verify and restore data."}`
 	}
 	currentDID := pubKeyToDIDKey(a.pubKey)
-	
+
+	type RestoredBlock struct {
+		VC         VCSchema
+		RawData    string
+		VCHash     string
+		PrevVCHash string
+	}
+
+	revokedMap := make(map[string]bool)
+	blocks := make(map[string]*RestoredBlock)
+
 	totalFound := 0
-	totalRestored := 0
-	
+
+	// Phase 1: Deep Parse existing files into memory blocks & tombstone markers
 	for _, syncDir := range a.cloudSyncDirs {
 		archiveDir := filepath.Join(syncDir, "VeriHash_Archive")
 		if _, err := os.Stat(archiveDir); os.IsNotExist(err) {
@@ -493,69 +596,205 @@ func (a *App) RestoreDataFromSync() string {
 
 		files, _ := os.ReadDir(archiveDir)
 		for _, f := range files {
-			if f.IsDir() || !strings.HasSuffix(f.Name(), ".json") {
+			if f.IsDir() {
 				continue
 			}
-			totalFound++
 
 			filePath := filepath.Join(archiveDir, f.Name())
 			data, err := os.ReadFile(filePath)
-			if err != nil { continue }
+			if err != nil {
+				continue
+			}
+
+			// Tombstone Extraction
+			if strings.HasSuffix(f.Name(), ".revoke.json") {
+				var revokeData struct {
+					VcID         string  `json:"vc_id"`
+					VcHash       string  `json:"vc_hash"`
+					RevokedAt    float64 `json:"revoked_at"`
+					RevokedByDID string  `json:"revoked_by_did"`
+					Signature    string  `json:"signature"`
+				}
+				if json.Unmarshal(data, &revokeData) == nil && revokeData.VcID != "" {
+				    payload := fmt.Sprintf("VERIHASH_REVOKE|%s|%s|%f|%s", revokeData.VcID, revokeData.VcHash, revokeData.RevokedAt, revokeData.RevokedByDID)
+				    
+				    pubKey, err := extractPubKeyFromDID(revokeData.RevokedByDID)
+				    if err == nil && len(pubKey) == ed25519.PublicKeySize {
+				        sigBytes, sigErr := hex.DecodeString(revokeData.Signature)
+				        if sigErr == nil && ed25519.Verify(pubKey, []byte(payload), sigBytes) {
+					        revokedMap[revokeData.VcID] = true
+				        } else {
+				            runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": fmt.Sprintf("[RESTORE WARNING] Forged tombstone discarded: %s", revokeData.VcID), "type": "err"})
+				        }
+				    }
+				}
+				continue
+			}
+
+			if !strings.HasSuffix(f.Name(), ".json") {
+				continue
+			}
+			
+			totalFound++
 
 			// 1. Cryptographic Verification
 			valid, _ := verifyCredentialDoc(string(data))
-			if !valid { continue }
+			if !valid {
+				continue
+			}
 
 			// 2. Identity Match Check
 			var vc VCSchema
 			json.Unmarshal(data, &vc)
-			if vc.Issuer != currentDID { continue }
+			if vc.Issuer != currentDID {
+				continue
+			}
 
 			// 3. Check for existence in local DB
 			var exists int
 			a.db.conn.QueryRow(`SELECT COUNT(*) FROM session_credentials WHERE vc_id = ?`, vc.ID).Scan(&exists)
-			if exists > 0 { continue }
-
-			// 4. Reconstruction and Injection
-			// Extract paths from LocalMetadata (for personal reference) or fallback to Files manifest
-			pathStr := ""
-			if vc.LocalMetadata != nil && len(vc.LocalMetadata.FullPaths) > 0 {
-				pathStr = strings.Join(vc.LocalMetadata.FullPaths, ",")
-			} else {
-				var names []string
-				for _, f := range vc.CredentialSubject.ProofOfWork.Files {
-					names = append(names, f.Name)
-				}
-				pathStr = strings.Join(names, ",")
+			if exists > 0 {
+				continue
 			}
 
 			vcHash := computeSHA256(vc.ID + "|" + vc.Proof.PreviousVCHash + "|" + string(data))
-
-			_, dbErr := a.db.conn.Exec(`
-				INSERT INTO session_credentials
-				(vc_id, timestamp, project_context, ai_insight, skill_tags, file_paths, full_vc_json, status, vc_hash, prev_vc_hash)
-				VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-			`, 
-				vc.ID,
-				float64(time.Now().UnixNano())/1e9, // record approximate restoration time
-				"", // project context lost in JSON, but metadata could be expanded later
-				vc.CredentialSubject.ProofOfWork.AIEvaluation,
-				"",
-				pathStr,
-				string(data),
-				vcHash,
-				vc.Proof.PreviousVCHash,
-			)
-
-			if dbErr == nil {
-				totalRestored++
+			blocks[vcHash] = &RestoredBlock{
+				VC:         vc,
+				RawData:    string(data),
+				VCHash:     vcHash,
+				PrevVCHash: vc.Proof.PreviousVCHash,
 			}
 		}
 	}
 
-	result := fmt.Sprintf(`{"found": %d, "restored": %d}`, totalFound, totalRestored)
+	totalRestored := 0
+	if len(blocks) == 0 {
+		return fmt.Sprintf(`{"found": %d, "restored": %d}`, totalFound, totalRestored)
+	}
+
+	// Phase 2: Topological Graph sorting
+	var orderedBlocks []*RestoredBlock
+	
+	nextBlockMap := make(map[string]*RestoredBlock)
+	for _, block := range blocks {
+		nextBlockMap[block.PrevVCHash] = block
+	}
+
+	var root *RestoredBlock
+	for _, block := range blocks {
+		if _, prevExistsInPool := blocks[block.PrevVCHash]; !prevExistsInPool {
+			root = block
+			break
+		}
+	}
+
+	if root == nil {
+	    for _, block := range blocks {
+	        root = block
+	        break
+	    }
+	}
+
+	degraded := false
+	current := root
+	for current != nil {
+		orderedBlocks = append(orderedBlocks, current)
+		nextHash := current.VCHash
+		delete(blocks, current.VCHash) 
+		nextBlock, exists := nextBlockMap[nextHash]
+		if exists && blocks[nextBlock.VCHash] != nil {
+			current = nextBlock
+		} else {
+		    var nextOrphan *RestoredBlock
+        	for _, block := range blocks {
+        		if _, prevExistsInPool := blocks[block.PrevVCHash]; !prevExistsInPool {
+        			nextOrphan = block
+        			break
+        		}
+        	}
+        	if nextOrphan == nil {
+        	    for _, block := range blocks {
+            		nextOrphan = block
+            		break
+            	}
+        	}
+        	if nextOrphan != nil {
+        	    degraded = true
+        	    runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[WARNING] Strict Mode: Degraded chain continuity recovered via splicing.", "type": "err"})
+        	}
+        	current = nextOrphan
+		}
+	}
+
+	// Phase 3: Ordered Relational Insert
+	for _, block := range orderedBlocks {
+		pathStr := ""
+		if block.VC.LocalMetadata != nil && len(block.VC.LocalMetadata.FullPaths) > 0 {
+			pathStr = strings.Join(block.VC.LocalMetadata.FullPaths, ",")
+		} else {
+			var names []string
+			for _, f := range block.VC.CredentialSubject.ProofOfWork.Files {
+				names = append(names, f.Name)
+			}
+			pathStr = strings.Join(names, ",")
+		}
+
+		var restoredUnixTime float64
+		if block.VC.CredentialSubject.ProofOfWork.UnixNanoMinting != "" {
+		    if parsedInt, pErr := strconv.ParseFloat(block.VC.CredentialSubject.ProofOfWork.UnixNanoMinting, 64); pErr == nil {
+		        restoredUnixTime = parsedInt / 1e9
+		    }
+		} else {
+            t, err := time.Parse(time.RFC3339, block.VC.IssuanceDate)
+            if err == nil {
+                restoredUnixTime = float64(t.UnixNano()) / 1e9
+            } else {
+                restoredUnixTime = float64(time.Now().UnixNano()) / 1e9
+            }
+		}
+
+		status := 1
+		var revokedAt float64 = 0
+		var revokeSig string = ""
+		
+		if revokedMap[block.VC.ID] {
+			status = 0
+		}
+
+		cProj := block.VC.CredentialSubject.ProofOfWork.ProjectContext
+		cTags := block.VC.CredentialSubject.ProofOfWork.SkillTags
+
+		_, dbErr := a.db.conn.Exec(`
+			INSERT INTO session_credentials
+			(vc_id, timestamp, project_context, ai_insight, skill_tags, file_paths, full_vc_json, status, vc_hash, prev_vc_hash, revoked_at, revoke_signature)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`,
+			block.VC.ID,
+			restoredUnixTime,
+			cProj,
+			block.VC.CredentialSubject.ProofOfWork.AIEvaluation,
+			cTags,
+			pathStr,
+			block.RawData,
+			status,
+			block.VCHash,
+			block.PrevVCHash,
+			revokedAt,
+			revokeSig,
+		)
+
+		if dbErr == nil {
+			totalRestored++
+		}
+	}
+
+	result := fmt.Sprintf(`{"found": %d, "restored": %d, "degraded": %t}`, totalFound, totalRestored, degraded)
+	msgStr := fmt.Sprintf("[RESTORE] Topology restored. %d records found, %d sequentially reconstructed.", totalFound, totalRestored)
+	if degraded {
+	    msgStr = fmt.Sprintf("[RESTORE] Recovered %d files with DEGRADED chain logic.", totalFound)
+	}
 	runtime.EventsEmit(a.ctx, "log", map[string]string{
-		"msg": fmt.Sprintf("[RESTORE] Scan complete. %d records found, %d uniquely reconstructed.", totalFound, totalRestored),
+		"msg":  msgStr,
 		"type": "sys",
 	})
 	return result
@@ -585,26 +824,41 @@ func (a *App) GenerateHTMLReport(vcID string, customTitle string) string {
 	return `{"status": "OK"}`
 }
 
-// RevokeCredential soft-deletes a credential by setting status = 0.
-// The record remains in the database to preserve hash chain integrity.
 func (a *App) RevokeCredential(vcID string) string {
+	var vcHash string
+	errHash := a.db.conn.QueryRow(`SELECT vc_hash FROM session_credentials WHERE vc_id = ?`, vcID).Scan(&vcHash)
+	if errHash != nil {
+		return `{"error": "Credential not found in local DB."}`
+	}
+
+	revokedAt := float64(time.Now().UnixNano()) / 1e9
+	did := a.GetDID()
+	
+	// Canonical Payload: VERIHASH_REVOKE|<vc_id>|<vc_hash>|<revoked_at>|<did>
+	payload := fmt.Sprintf("VERIHASH_REVOKE|%s|%s|%f|%s", vcID, vcHash, revokedAt, did)
+	signatureBytes := ed25519.Sign(a.privKey, []byte(payload))
+	signatureHex := hex.EncodeToString(signatureBytes)
+
 	_, err := a.db.conn.Exec(
-		`UPDATE session_credentials SET status = 0 WHERE vc_id = ?`, vcID,
+		`UPDATE session_credentials SET status = 0, revoked_at = ?, revoke_signature = ? WHERE vc_id = ?`, 
+		revokedAt, signatureHex, vcID,
 	)
 	if err != nil {
 		return `{"error": "` + err.Error() + `"}`
 	}
-	
-	// Ensure cloud sync consistency: delete the revoked JSON from all mapped cloud drives
+
+	// Dump the cryptographic bundle
 	cleanVcID := strings.ReplaceAll(vcID, ":", "_")
-	for _, syncDir := range a.cloudSyncDirs {
-		jsonPath := filepath.Join(syncDir, "VeriHash_Archive", fmt.Sprintf("VeriHash_%s.json", cleanVcID))
-		_ = os.Remove(jsonPath) // silently ignore if file not found
-	}
+	revokeJSON := fmt.Sprintf(`{"vc_id": "%s", "vc_hash": "%s", "revoked_at": %f, "revoked_by_did": "%s", "signature": "%s"}`, 
+		vcID, vcHash, revokedAt, did, signatureHex)
 	
+	for _, syncDir := range a.cloudSyncDirs {
+		jsonPath := filepath.Join(syncDir, "VeriHash_Archive", fmt.Sprintf("VeriHash_%s.revoke.json", cleanVcID))
+		_ = os.WriteFile(jsonPath, []byte(revokeJSON), 0644)
+	}
+
 	return `{"status": "OK"}`
 }
-
 
 // SaveToFile opens the native OS Save-As dialog and writes content to the chosen path.
 // Returns the saved path on success, or a JSON error string on failure / cancellation.
@@ -629,7 +883,6 @@ func (a *App) SaveToFile(defaultFilename, content string) string {
 	}
 	return `{"saved": true, "path": "` + strings.ReplaceAll(path, `\`, `\\`) + `"}`
 }
-
 
 // IdentityBundle is the portable identity package for cross-machine migration
 type IdentityBundle struct {
@@ -790,7 +1043,7 @@ func (a *App) ImportMnemonic(mnemonic, newPassword, confirm string) string {
 
 	// Refresh Context & OS Keyring
 	keyring.Set("VeriHash", "vault_password", newPassword)
-	
+
 	// Force the internal context to drop the running key and demand a restart, or just inject it.
 	// We'll return OK and let the frontend reboot.
 	return `{"status": "OK", "did": "` + pubKeyToDIDKey(pubKey) + `"}`
@@ -798,7 +1051,7 @@ func (a *App) ImportMnemonic(mnemonic, newPassword, confirm string) string {
 
 // replicateToCloud writes the signed JSON credential directly into the flat
 // VeriHash_Archive directory in each configured cloud sync folder.
-func (a *App) replicateToCloud(vcID string, sourceFiles []string) {
+func (a *App) replicateToCloud(vcID string) {
 	// Fetch the full constructed JSON from DB
 	var fullJsonStr string
 	err := a.db.conn.QueryRow(`SELECT full_vc_json FROM session_credentials WHERE vc_id = ?`, vcID).Scan(&fullJsonStr)
@@ -831,7 +1084,7 @@ func (a *App) replicateToCloud(vcID string, sourceFiles []string) {
 // This ensures the cryptographic PreviousVCHash chain is physically continuous
 // in the cloud even if the directory was bound after minting began.
 func (a *App) SyncHistoricLedger(targetDir string) string {
-	rows, err := a.db.conn.Query(`SELECT vc_id, full_vc_json FROM session_credentials WHERE status = 1`)
+	rows, err := a.db.conn.Query(`SELECT vc_id, full_vc_json, status, vc_hash, revoked_at, revoke_signature FROM session_credentials`)
 	if err != nil {
 		return `{"error": "Failed to query historic ledger: ` + err.Error() + `"}`
 	}
@@ -842,15 +1095,27 @@ func (a *App) SyncHistoricLedger(targetDir string) string {
 
 	count := 0
 	for rows.Next() {
-		var vcID, fullJsonStr string
-		if err := rows.Scan(&vcID, &fullJsonStr); err == nil && fullJsonStr != "" {
+		var vcID, fullJsonStr, vcHash, revokeSig string
+		var status int
+		var revokedAt float64
+		if err := rows.Scan(&vcID, &fullJsonStr, &status, &vcHash, &revokedAt, &revokeSig); err == nil && fullJsonStr != "" {
 			cleanVcID := strings.ReplaceAll(vcID, ":", "_")
 			jsonPath := filepath.Join(archiveDir, fmt.Sprintf("VeriHash_%s.json", cleanVcID))
 
-			// Only write if not already present
+			// Write the VC object if missing
 			if _, statErr := os.Stat(jsonPath); os.IsNotExist(statErr) {
 				_ = os.WriteFile(jsonPath, []byte(fullJsonStr), 0644)
 				count++
+			}
+			
+			// Determine if a tombstone needs to be paired
+			if status == 0 && revokeSig != "" {
+			    revokePath := filepath.Join(archiveDir, fmt.Sprintf("VeriHash_%s.revoke.json", cleanVcID))
+			    if _, statErr := os.Stat(revokePath); os.IsNotExist(statErr) {
+			        revokeJSON := fmt.Sprintf(`{"vc_id": "%s", "vc_hash": "%s", "revoked_at": %f, "revoked_by_did": "%s", "signature": "%s"}`, 
+		                vcID, vcHash, revokedAt, a.GetDID(), revokeSig)
+			        _ = os.WriteFile(revokePath, []byte(revokeJSON), 0644)
+			    }
 			}
 		}
 	}

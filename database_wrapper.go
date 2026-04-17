@@ -54,6 +54,8 @@ func initDB() error {
 	db.Exec(`ALTER TABLE session_credentials ADD COLUMN status INTEGER DEFAULT 1;`)
 	db.Exec(`ALTER TABLE session_credentials ADD COLUMN vc_hash TEXT DEFAULT '';`)
 	db.Exec(`ALTER TABLE session_credentials ADD COLUMN prev_vc_hash TEXT DEFAULT '';`)
+	db.Exec(`ALTER TABLE session_credentials ADD COLUMN revoked_at INTEGER DEFAULT 0;`)
+	db.Exec(`ALTER TABLE session_credentials ADD COLUMN revoke_signature TEXT DEFAULT '';`)
 	return nil
 }
 

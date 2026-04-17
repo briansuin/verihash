@@ -62,6 +62,10 @@ export function LoadConfig() {
   return window['go']['main']['App']['LoadConfig']();
 }
 
+export function LoadSessionIgnores() {
+  return window['go']['main']['App']['LoadSessionIgnores']();
+}
+
 export function LockVault() {
   return window['go']['main']['App']['LockVault']();
 }
@@ -80,6 +84,10 @@ export function RevokeCredential(arg1) {
 
 export function SaveConfig(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['SaveConfig'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
+export function SaveSessionIgnores(arg1, arg2) {
+  return window['go']['main']['App']['SaveSessionIgnores'](arg1, arg2);
 }
 
 export function SaveToFile(arg1, arg2) {
@@ -108,6 +116,10 @@ export function TriggerMint(arg1, arg2) {
 
 export function UnlockWallet(arg1) {
   return window['go']['main']['App']['UnlockWallet'](arg1);
+}
+
+export function UpdateIgnoredPatterns(arg1) {
+  return window['go']['main']['App']['UpdateIgnoredPatterns'](arg1);
 }
 
 export function VerifyChain() {

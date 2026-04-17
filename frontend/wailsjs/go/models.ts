@@ -8,6 +8,8 @@ export namespace main {
 	    base_url: string;
 	    auto_start: boolean;
 	    cloud_sync_dirs: string[];
+	    ignored_patterns: string[];
+	    session_ignores: Record<string, Array<string>>;
 	
 	    static createFrom(source: any = {}) {
 	        return new Config(source);
@@ -22,6 +24,8 @@ export namespace main {
 	        this.base_url = source["base_url"];
 	        this.auto_start = source["auto_start"];
 	        this.cloud_sync_dirs = source["cloud_sync_dirs"];
+	        this.ignored_patterns = source["ignored_patterns"];
+	        this.session_ignores = source["session_ignores"];
 	    }
 	}
 	export class LedgerEntry {

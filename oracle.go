@@ -60,11 +60,14 @@ type LocalMetadata struct {
 }
 
 type ProofOfWork struct {
-	TimestampRange []float64      `json:"timestampRange"`
-	Files          []FileManifest `json:"files"`
-	AIEngine       string         `json:"aiEngine"` // e.g. "GEMINI::gemini-2.5-flash"
-	AIEvaluation   string         `json:"aiEvaluation"`
-	HashChainRoot  string         `json:"hashChainRoot"`
+	TimestampRange  []float64      `json:"timestampRange"`
+	Files           []FileManifest `json:"files"`
+	AIEngine        string         `json:"aiEngine"` // e.g. "GEMINI::gemini-2.5-flash"
+	AIEvaluation    string         `json:"aiEvaluation"`
+	HashChainRoot   string         `json:"hashChainRoot"`
+	ProjectContext  string         `json:"projectContext,omitempty"`
+	SkillTags       string         `json:"skillTags,omitempty"`
+	UnixNanoMinting string         `json:"unixNanoMinting,omitempty"`
 }
 
 type Proof struct {
@@ -315,11 +318,14 @@ FILE MANIFEST:
 		CredentialSubject: CredentialSubject{
 			ID: issuerDID,
 			ProofOfWork: ProofOfWork{
-				TimestampRange: []float64{minTs, maxTs},
-				Files:          fileManifest, // name + sha256 only — no full paths
-				AIEngine:       aiEngineUsed,
-				AIEvaluation:   aiResult,
-				HashChainRoot:  latestHash,
+				TimestampRange:  []float64{minTs, maxTs},
+				Files:           fileManifest, // name + sha256 only — no full paths
+				AIEngine:        aiEngineUsed,
+				AIEvaluation:    aiResult,
+				HashChainRoot:   latestHash,
+				ProjectContext:  workspacePath,
+				SkillTags:       "",
+				UnixNanoMinting: fmt.Sprintf("%d", time.Now().UnixNano()),
 			},
 		},
 		LocalMetadata: &LocalMetadata{
@@ -360,13 +366,18 @@ FILE MANIFEST:
 
 	finalJSON, _ := json.MarshalIndent(vc, "", "  ")
 
-	// 6. Save credential to the Ledger database
-	// vc_hash = SHA256(vc_id | prevVCHash | full_signed_json)
+	// 6. Save credential to the Ledger database atomically while GCing consumed snapshots
 	vcHash := computeSHA256(vcID + "|" + prevVCHash + "|" + string(finalJSON))
 	
-	// Store full paths in local DB for the user's own reference
 	filePathsStr := strings.Join(fullPaths, ",")
-	_, dbErr := db.conn.Exec(`
+	
+	tx, err := db.conn.Begin()
+	if err != nil {
+		runtime.EventsEmit(ctx, "log", map[string]string{"msg": fmt.Sprintf("[ORACLE ERROR] Transaction start failed: %v", err), "type": "err"})
+		return `{"error": "Database transaction failure"}`
+	}
+	
+	_, dbErr := tx.Exec(`
 		INSERT OR IGNORE INTO session_credentials
 		(vc_id, timestamp, project_context, ai_insight, skill_tags, file_paths, full_vc_json, status, vc_hash, prev_vc_hash)
 		VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
@@ -381,11 +392,36 @@ FILE MANIFEST:
 		vcHash,
 		prevVCHash,
 	)
+	
 	if dbErr != nil {
-		runtime.EventsEmit(ctx, "log", map[string]string{"msg": fmt.Sprintf("[ORACLE] Warning: Failed to save to ledger: %v", dbErr), "type": "err"})
-	} else {
-		runtime.EventsEmit(ctx, "log", map[string]string{"msg": fmt.Sprintf("[ORACLE] Credential anchored to chain \u2713 | Block hash: %s...", vcHash[:16]), "type": "sys"})
+		tx.Rollback()
+		runtime.EventsEmit(ctx, "log", map[string]string{"msg": fmt.Sprintf("[ORACLE ERROR] Failed to save to ledger: %v", dbErr), "type": "err"})
+		return `{"error": "Database insertion failure"}`
 	}
+	
+	// Atomic Precision GC: Kill exclusively the fast-fetched consumed Snapshot IDs
+	var snapshotIDs []interface{}
+	placeholders := ""
+	for i, s := range snapshots {
+	    if i > 0 { placeholders += "," }
+	    placeholders += "?"
+	    snapshotIDs = append(snapshotIDs, s.ID)
+	}
+	
+	_, gcErr := tx.Exec(fmt.Sprintf(`DELETE FROM file_snapshots WHERE id IN (%s)`, placeholders), snapshotIDs...)
+	if gcErr != nil {
+	    tx.Rollback()
+	    runtime.EventsEmit(ctx, "log", map[string]string{"msg": fmt.Sprintf("[ORACLE ERROR] GC failed: %v", gcErr), "type": "err"})
+	    return `{"error": "Garbage collection failure"}`
+	}
+	
+	commitErr := tx.Commit()
+	if commitErr != nil {
+	    runtime.EventsEmit(ctx, "log", map[string]string{"msg": fmt.Sprintf("[ORACLE ERROR] TX Commit failed: %v", commitErr), "type": "err"})
+	    return `{"error": "Database commit failure"}`
+	}
+	
+	runtime.EventsEmit(ctx, "log", map[string]string{"msg": fmt.Sprintf("[ORACLE] Credential anchored \u2713 | Exhaust Cleaned | Block: %s...", vcHash[:16]), "type": "sys"})
 
 	return string(finalJSON)
 }

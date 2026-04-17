@@ -1,17 +1,17 @@
-import { SelectDirectory, SaveConfig, StartWatchdog, TriggerMint, GetDID, LoadConfig, GetWorkspaceFiles, GetLedger, ExportCredentialJSON, ExportSanitizedJSON, RestoreDataFromSync, GenerateHTMLReport, RevokeCredential, VerifyChain, VerifyCredential, ExportIdentityBundle, ImportIdentityBundle, SaveToFile, GetWalletStatus, UnlockWallet, InitWallet, MigrateWallet, GetMnemonic, LockVault, ToggleAutoStart, IsAutoStartEnabled, ImportMnemonic, SyncHistoricLedger } from '../wailsjs/go/main/App';
+import { SelectDirectory, SaveConfig, StartWatchdog, TriggerMint, GetDID, LoadConfig, GetWorkspaceFiles, GetLedger, ExportCredentialJSON, ExportSanitizedJSON, RestoreDataFromSync, GenerateHTMLReport, RevokeCredential, VerifyChain, VerifyCredential, ExportIdentityBundle, ImportIdentityBundle, SaveToFile, GetWalletStatus, UnlockWallet, InitWallet, MigrateWallet, GetMnemonic, LockVault, ToggleAutoStart, IsAutoStartEnabled, ImportMnemonic, SyncHistoricLedger, UpdateIgnoredPatterns, SaveSessionIgnores } from '../wailsjs/go/main/App';
 import { EventsOn, WindowGetSize, WindowSetSize, OnFileDrop } from '../wailsjs/runtime/runtime';
 
 document.addEventListener('DOMContentLoaded', async () => {
 
     // ======== WALLET LOCK SCREEN ========
     // Must resolve before any other UI interaction
-    const walletOverlay    = document.getElementById('wallet-overlay');
-    const walletSubtitle   = document.getElementById('wallet-subtitle');
+    const walletOverlay = document.getElementById('wallet-overlay');
+    const walletSubtitle = document.getElementById('wallet-subtitle');
 
     function showWalletScreen(screenId, subtitle) {
         walletOverlay.style.display = 'flex';
         walletSubtitle.innerText = subtitle;
-        ['wallet-screen-unlock','wallet-screen-init','wallet-screen-migrate', 'wallet-screen-mnemonic'].forEach(id => {
+        ['wallet-screen-unlock', 'wallet-screen-init', 'wallet-screen-migrate', 'wallet-screen-mnemonic'].forEach(id => {
             document.getElementById(id).style.display = (id === screenId) ? 'block' : 'none';
         });
     }
@@ -42,7 +42,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 statusEl.innerText = '\u2713 Success!';
                 setTimeout(hideWalletOverlay, 500);
             }
-        } catch(e) {
+        } catch (e) {
             statusEl.className = 'wallet-status err';
             statusEl.innerText = '\u2715 Error: ' + e;
         } finally {
@@ -65,7 +65,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else if (walletState === 'new') {
         const mnemonic = await GetMnemonic();
         showWalletScreen('wallet-screen-mnemonic', 'SEED RECOVERY PHRASE');
-        
+
         const mnemonicDisplay = document.getElementById('mnemonic-display');
         mnemonicDisplay.innerHTML = '';
         mnemonic.split(' ').forEach((word, index) => {
@@ -111,7 +111,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const cloudConfigGroup = document.getElementById('cloud-config-group');
     const modelNameInput = document.getElementById('model-name');
     const apiKeyInput = document.getElementById('api-key');
-    
+
     const workspaceStack = document.getElementById('workspace-stack');
     const btnSelectDir = document.getElementById('btn-select-dir');
     const nodeDid = document.getElementById('node-did');
@@ -122,7 +122,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     const fileTreeContainer = document.getElementById('file-tree-container');
     const btnSelectAll = document.getElementById('btn-select-all');
     const btnDeselectAll = document.getElementById('btn-deselect-all');
-    
+    const btnIgnoreSelected = document.getElementById('btn-ignore-selected');
+    const btnIgnoreDir = document.getElementById('btn-ignore-dir');
+    const dirIgnoreDropdown = document.getElementById('dir-ignore-dropdown');
+    const dirIgnoreList = document.getElementById('dir-ignore-list');
+
     const consoleOutput = document.getElementById('console-output');
     const statusDot = document.querySelector('.status-dot');
     const statusText = document.getElementById('status-text');
@@ -166,19 +170,29 @@ document.addEventListener('DOMContentLoaded', async () => {
     const syncDirsContainer = document.getElementById('sync-dirs-container');
     const btnAddSyncDir = document.getElementById('btn-add-sync-dir');
 
+    // Ignore Patterns refs
+    const ignorePatternsContainer = document.getElementById('ignore-patterns-container');
+    const btnAddIgnore = document.getElementById('btn-add-ignore');
+    const inputIgnorePattern = document.getElementById('input-ignore-pattern');
+
     // M/D State
     let workspaces = [];
     let cloudSyncDirs = [];
+    let ignoredPatterns = [];
+    let sessionIgnores = {}; // Per-workspace persistent UI filter tree states
+    let collapsedDirs = {};  // Per-workspace filter-tree UI toggle states
     let activeWorkspace = null;
 
     // Boot Sequence
     try {
         const did = await GetDID();
         nodeDid.innerText = did;
-        
+
         const cfg = await LoadConfig();
         if (cfg.workspaces) workspaces = cfg.workspaces;
         if (cfg.cloud_sync_dirs) cloudSyncDirs = cfg.cloud_sync_dirs;
+        if (cfg.ignored_patterns) ignoredPatterns = cfg.ignored_patterns;
+        if (cfg.session_ignores) sessionIgnores = cfg.session_ignores;
         if (cfg.ai_engine) {
             aiEngineSelect.value = cfg.ai_engine;
             // Sync custom dropdown label from saved config
@@ -198,8 +212,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         renderWorkspaces();
         renderSyncDirs();
+        renderIgnorePatterns();
         // Manually apply engine-specific UI state before triggering change,
-        // so syncConfig doesn't overwrite correct values with UI defaults.
+        // so syncConfig does not overwrite correct values with UI defaults.
         if (cfg.ai_engine && cfg.ai_engine !== 'ollama') {
             cloudConfigGroup.style.display = 'block';
         }
@@ -208,7 +223,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (workspaces.length > 0) {
             StartWatchdog();
         }
-    } catch(e) { console.error("Boot error: ", e); }
+    } catch (e) { console.error("Boot error: ", e); }
 
     // Visual Mechanics
     btnSidebarToggle.addEventListener('click', async () => {
@@ -223,7 +238,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 btnSidebarToggle.innerText = '[ > ]';
                 WindowSetSize(1120, size.h);
             }
-        } catch (err) {}
+        } catch (err) { }
     });
 
     if (btnSelectAll && btnDeselectAll) {
@@ -236,6 +251,18 @@ document.addEventListener('DOMContentLoaded', async () => {
             const checkboxes = fileTreeContainer.querySelectorAll('.file-checkbox');
             checkboxes.forEach(cb => cb.checked = false);
         });
+
+        if (btnIgnoreDir && dirIgnoreDropdown) {
+            btnIgnoreDir.addEventListener('click', (e) => {
+                e.stopPropagation();
+                dirIgnoreDropdown.style.display = dirIgnoreDropdown.style.display === 'none' ? 'block' : 'none';
+            });
+            document.addEventListener('click', (e) => {
+                if (dirIgnoreDropdown.style.display === 'block' && !dirIgnoreDropdown.contains(e.target)) {
+                    dirIgnoreDropdown.style.display = 'none';
+                }
+            });
+        }
     }
 
     EventsOn("log", (data) => {
@@ -280,12 +307,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // Show engine-specific hints
             const hints = {
-                gemini:   { label: 'GEMINI LINKED',        placeholder: 'e.g. gemini-2.5-flash' },
-                deepseek: { label: 'DEEPSEEK LINKED',      placeholder: 'e.g. deepseek-chat' },
-                qwen:     { label: 'QWEN LINKED',           placeholder: 'e.g. qwen-turbo' },
-                minimax:  { label: 'MINIMAX LINKED',       placeholder: 'e.g. MiniMax-Text-01' },
-                openai:   { label: 'OPENAI LINKED',        placeholder: 'e.g. gpt-4o-mini' },
-                custom:   { label: 'CUSTOM ENDPOINT',      placeholder: 'your-model-name' },
+                gemini: { label: 'GEMINI LINKED', placeholder: 'e.g. gemini-2.5-flash' },
+                deepseek: { label: 'DEEPSEEK LINKED', placeholder: 'e.g. deepseek-chat' },
+                qwen: { label: 'QWEN LINKED', placeholder: 'e.g. qwen-turbo' },
+                minimax: { label: 'MINIMAX LINKED', placeholder: 'e.g. MiniMax-Text-01' },
+                openai: { label: 'OPENAI LINKED', placeholder: 'e.g. gpt-4o-mini' },
+                custom: { label: 'CUSTOM ENDPOINT', placeholder: 'your-model-name' },
             };
             const h = hints[engine] || hints.gemini;
             statusText.innerText = h.label;
@@ -298,7 +325,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         syncConfig();
     });
-    if (apiKeyInput)   apiKeyInput.addEventListener('change', syncConfig);
+    if (apiKeyInput) apiKeyInput.addEventListener('change', syncConfig);
     if (modelNameInput) modelNameInput.addEventListener('change', syncConfig);
     const baseUrlInput2 = document.getElementById('base-url');
     if (baseUrlInput2) baseUrlInput2.addEventListener('change', syncConfig);
@@ -325,7 +352,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 <div class="workspace-tooltip" style="bottom: 100%; left: 10px; margin-bottom: 5px;">${dir}</div>
                 <button class="cyber-btn sm danger" data-index="${i}" style="font-size: 0.55rem; padding: 2px 6px;">[ UNBIND ]</button>
             `;
-            
+
             const pathEl = block.querySelector('.workspace-path');
             pathEl.addEventListener('click', async () => {
                 try {
@@ -367,6 +394,50 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
+    // ======== IGNORE PATTERNS MECHANICS ========
+    function renderIgnorePatterns() {
+        if (!ignorePatternsContainer) return;
+        ignorePatternsContainer.innerHTML = '';
+        if (ignoredPatterns.length === 0) {
+            ignorePatternsContainer.innerHTML = '<div style="color: #666; font-size: 0.75rem; font-style: italic;">No manual exclusions set.</div>';
+            return;
+        }
+        ignoredPatterns.forEach((pattern, i) => {
+            const tag = document.createElement('div');
+            tag.className = 'ignore-tag';
+            // Use inline styles since I couldn't put them in css file previously without errors
+            tag.style.cssText = 'display: flex; align-items: center; background: rgba(0, 255, 204, 0.08); border: 1px solid rgba(0, 255, 204, 0.3); color: var(--primary); font-size: 0.72rem; padding: 4px 8px; border-radius: 3px;';
+            tag.innerHTML = `
+                <span>${pattern}</span>
+                <span class="remove-tag" data-index="${i}" style="margin-left:8px; cursor:pointer; color:rgba(0,255,204,0.5); font-size:0.9rem;">&times;</span>
+            `;
+            const removeBtn = tag.querySelector('.remove-tag');
+            removeBtn.addEventListener('click', async () => {
+                ignoredPatterns.splice(i, 1);
+                await UpdateIgnoredPatterns(ignoredPatterns);
+                renderIgnorePatterns();
+                if (activeWorkspace) await renderFileTree(activeWorkspace);
+            });
+            ignorePatternsContainer.appendChild(tag);
+        });
+    }
+
+    if (btnAddIgnore) {
+        const addPattern = async () => {
+            const val = inputIgnorePattern.value.trim();
+            if (val && !ignoredPatterns.includes(val)) {
+                ignoredPatterns.push(val);
+                inputIgnorePattern.value = '';
+                await UpdateIgnoredPatterns(ignoredPatterns);
+                renderIgnorePatterns();
+                if (activeWorkspace) await renderFileTree(activeWorkspace);
+            }
+        };
+        btnAddIgnore.addEventListener('click', addPattern);
+        inputIgnorePattern.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') addPattern();
+        });
+    }
 
     // M/D Workspace Mechanics
     function renderWorkspaces() {
@@ -381,9 +452,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 <button class="btn-remove">&times;</button>
             `;
             card.addEventListener('click', (e) => {
-                if(e.target.classList.contains('btn-remove')) {
+                if (e.target.classList.contains('btn-remove')) {
                     workspaces = workspaces.filter(w => w !== ws);
-                    if(activeWorkspace === ws) activeWorkspace = null;
+                    if (activeWorkspace === ws) activeWorkspace = null;
                     syncConfig();
                     renderWorkspaces();
                     updateView();
@@ -414,21 +485,264 @@ document.addEventListener('DOMContentLoaded', async () => {
         try {
             const files = await GetWorkspaceFiles(ws);
             fileTreeContainer.innerHTML = '';
-            if(!files || files.length === 0) {
+            if (!files || files.length === 0) {
                 fileTreeContainer.innerHTML = '<div style="color:#888; font-size:0.8rem;">No recent modifications detected.</div>';
                 return;
             }
             const normalizedWs = ws.replace(/\\/g, '/');
+            const localIgnores = sessionIgnores[ws] || [];
+
+            // 1. Gather All Directories and Files (Nodes)
+            const allNodes = new Set();
             files.forEach(file => {
-                const item = document.createElement('label');
-                item.className = 'file-tree-item';
+                let relPath = file;
+                if (file.toLowerCase().startsWith(normalizedWs.toLowerCase())) {
+                    relPath = file.substring(normalizedWs.length);
+                }
+                relPath = relPath.replace(/^[\/\\]/, '');
                 
+                const parts = relPath.split('/');
+                let currentDir = "";
+                // loop up to parts.length - 1 because the last part is the filename
+                for (let i = 0; i < parts.length - 1; i++) {
+                    currentDir = currentDir ? (currentDir + '/' + parts[i]) : parts[i];
+                    allNodes.add('DIR:' + currentDir);
+                }
+                // Add the file as well
+                allNodes.add('FILE:' + relPath + '|' + file);
+            });
+
+            // 2. Refresh the Dropdown Menu with Active Tree
+            if (dirIgnoreList) {
+                dirIgnoreList.innerHTML = '';
+                if (allNodes.size === 0) {
+                    dirIgnoreList.innerHTML = '<div style="color:#666; font-style:italic;">No files/dirs found.</div>';
+                } else {
+                    const sortedNodes = Array.from(allNodes).sort((a,b) => {
+                        let aRel = a.startsWith('DIR:') ? a.substring(4) : a.substring(5, a.indexOf('|'));
+                        let bRel = b.startsWith('DIR:') ? b.substring(4) : b.substring(5, b.indexOf('|'));
+                        
+                        let aParts = aRel.split('/');
+                        let bParts = bRel.split('/');
+                        
+                        let minLen = Math.min(aParts.length, bParts.length);
+                        for (let i = 0; i < minLen; i++) {
+                            if (aParts[i] !== bParts[i]) {
+                                // Depth mismatch identifies if one is a leaf (FILE) vs intermediate (DIR)
+                                let aIsDir = (i < aParts.length - 1) || a.startsWith('DIR:');
+                                let bIsDir = (i < bParts.length - 1) || b.startsWith('DIR:');
+                                
+                                if (!aIsDir && bIsDir) return -1; // File floats above Directory
+                                if (aIsDir && !bIsDir) return 1;
+                                
+                                return aParts[i].localeCompare(bParts[i]);
+                            }
+                        }
+                        return aParts.length - bParts.length;
+                    });
+                    
+                    if (!collapsedDirs[ws]) {
+                        collapsedDirs[ws] = [];
+                        allNodes.forEach(nodeRaw => {
+                            if (nodeRaw.startsWith('DIR:')) collapsedDirs[ws].push(nodeRaw.substring(4));
+                        });
+                    }
+                    const localCollapsed = collapsedDirs[ws];
+                    
+                    sortedNodes.forEach(nodeRaw => {
+                        const isNodeDir = nodeRaw.startsWith('DIR:');
+                        let nodePath = "";
+                        let fullPath = "";
+                        let stateKey = "";
+                        
+                        if (isNodeDir) {
+                            nodePath = nodeRaw.substring(4);
+                            stateKey = nodeRaw;
+                        } else {
+                            const sepPos = nodeRaw.indexOf('|');
+                            nodePath = nodeRaw.substring(5, sepPos);
+                            fullPath = nodeRaw.substring(sepPos + 1);
+                            stateKey = fullPath; // explicit absolute path ignore for files
+                        }
+
+                        // --- COLLAPSE CHECK (SKIP CHILDREN) ---
+                        let isHiddenByCollapse = false;
+                        for (let colDir of localCollapsed) {
+                            if (nodePath.startsWith(colDir + '/')) {
+                                isHiddenByCollapse = true;
+                                break;
+                            }
+                        }
+                        if (isHiddenByCollapse) return;
+
+                        let parentIgnored = false;
+                        const dirParts = nodePath.split('/');
+                        let currentPath = "";
+                        const loopLimit = isNodeDir ? dirParts.length - 1 : dirParts.length - 1;
+                        for (let i = 0; i < loopLimit; i++) {
+                            currentPath = currentPath ? (currentPath + '/' + dirParts[i]) : dirParts[i];
+                            if (localIgnores.includes('DIR:' + currentPath)) parentIgnored = true;
+                            if (localIgnores.includes('EXCEPT:' + currentPath)) parentIgnored = false;
+                        }
+                        
+                        let isChecked = parentIgnored;
+                        if (localIgnores.includes(stateKey)) isChecked = true;
+                        if (localIgnores.includes('EXCEPT:' + nodePath)) isChecked = false;
+
+                        // Mathematically perfect Indeterminate check: We look ahead at all actual descendants in sortedNodes
+                        // If any descendant has an EXPLICIT rule that contradicts this directory's isChecked state, or if any descendant 
+                        // resolves to a different effective state, our visual is indeterminate.
+                        let isIndeterminate = false;
+                        if (isNodeDir) {
+                            let hasCheckedChild = false;
+                            let hasUncheckedChild = false;
+                            
+                            // We can quickly parse allNodes to see if descendants resolve differently
+                            allNodes.forEach(childRaw => {
+                                const isChildDir = childRaw.startsWith('DIR:');
+                                let childPath = isChildDir ? childRaw.substring(4) : childRaw.substring(5, childRaw.indexOf('|'));
+                                
+                                if (childPath.startsWith(nodePath + '/')) {
+                                    // Calculate child's effective state
+                                    let cParentIgnored = false;
+                                    const cParts = childPath.split('/');
+                                    let cCur = "";
+                                    for (let i = 0; i < (isChildDir ? cParts.length - 1 : cParts.length - 1); i++) {
+                                        cCur = cCur ? (cCur + '/' + cParts[i]) : cParts[i];
+                                        if (localIgnores.includes('DIR:' + cCur)) cParentIgnored = true;
+                                        if (localIgnores.includes('EXCEPT:' + cCur)) cParentIgnored = false;
+                                    }
+                                    let cStateKey = isChildDir ? 'DIR:' + childPath : childRaw.substring(childRaw.indexOf('|') + 1);
+                                    let cChecked = cParentIgnored;
+                                    if (localIgnores.includes(cStateKey)) cChecked = true;
+                                    if (localIgnores.includes('EXCEPT:' + childPath)) cChecked = false;
+                                    
+                                    if (cChecked) hasCheckedChild = true;
+                                    else hasUncheckedChild = true;
+                                }
+                            });
+                            
+                            if (hasCheckedChild && hasUncheckedChild) {
+                                isIndeterminate = true;
+                            }
+                        }
+
+                        const isException = parentIgnored && !isChecked;
+                        const opacity = isChecked ? '0.4' : '1';
+                        const fontColor = isException ? 'var(--primary)' : 'rgba(204,204,204,' + opacity + ')';
+                        
+                        // Calculate indent visually based on slash count
+                        const depth = (nodePath.match(/\//g) || []).length;
+                        const indent = depth * 10;
+                        
+                        const row = document.createElement('label');
+                        row.style.cssText = `display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 2px 0 2px ${indent}px; color: ${fontColor}; transition: 0.2s all;`;
+                        
+                        // Show just the basename of the node
+                        const baseName = nodePath.split('/').pop();
+                        const icon = isNodeDir ? '\ud83d\udcc1' : '\ud83d\udcc4'; // Folder vs Document emoji
+                        const displayTitle = isNodeDir ? baseName.toUpperCase() : baseName;
+                        const prefix = isException ? `\u2514 [EXC] ` : `\u2514 `;
+                        
+                        const isCollapsed = localCollapsed.includes(nodePath);
+                        const toggleHtml = isNodeDir 
+                            ? `<span class="tree-toggle" style="color: var(--primary); font-size: 0.7rem; font-weight: bold; width: 12px; display: inline-block; text-align: center;" title="Toggle folder contents">${isCollapsed ? '▸' : '▾'}</span>`
+                            : `<span style="width: 12px; display: inline-block;"></span>`;
+                        
+                        row.innerHTML = `
+                            <input type="checkbox" style="accent-color: #00ffcc; cursor: pointer; flex-shrink: 0;" ${isChecked ? 'checked' : ''}>
+                            <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.65rem;" title="/${nodePath}">${prefix}${toggleHtml} ${icon} ${displayTitle}</span>
+                        `;
+
+                        const cb = row.querySelector('input');
+                        if (isIndeterminate) {
+                            cb.indeterminate = true;
+                            // Adding a custom style class in case Windows default checkbox masks it
+                            cb.classList.add('indeterminate-true');
+                        }
+
+                        cb.addEventListener('change', async (e) => {
+                            if (!sessionIgnores[ws]) sessionIgnores[ws] = [];
+                            let ignores = sessionIgnores[ws];
+                            
+                            const exceptKeyUse = 'EXCEPT:' + nodePath;
+                            
+                            if (cb.checked) {
+                                if (parentIgnored) {
+                                    ignores = ignores.filter(i => i !== exceptKeyUse);
+                                } else {
+                                    ignores.push(stateKey);
+                                }
+                            } else {
+                                if (parentIgnored) {
+                                    ignores.push(exceptKeyUse);
+                                } else {
+                                    ignores = ignores.filter(i => i !== stateKey);
+                                }
+                            }
+                            sessionIgnores[ws] = ignores;
+                            await SaveSessionIgnores(ws, ignores);
+                            
+                            // Keep menu open while checking/unchecking
+                            e.stopPropagation();
+                            await renderFileTree(ws);
+                        });
+                        
+                        // Tree Collapser event
+                        if (isNodeDir) {
+                            const toggler = row.querySelector('.tree-toggle');
+                            if (toggler) {
+                                toggler.addEventListener('click', async (e) => {
+                                    e.stopPropagation();
+                                    e.preventDefault();
+                                    if (localCollapsed.includes(nodePath)) {
+                                        collapsedDirs[ws] = localCollapsed.filter(p => p !== nodePath);
+                                    } else {
+                                        collapsedDirs[ws].push(nodePath);
+                                    }
+                                    await renderFileTree(ws);
+                                });
+                            }
+                        }
+
+                        dirIgnoreList.appendChild(row);
+                    });
+                }
+            }
+
+            // 3. Render visible files
+            files.forEach(file => {
                 // Determine clean relative path trimming the workspace root
                 let relPath = file;
                 if (file.toLowerCase().startsWith(normalizedWs.toLowerCase())) {
                     relPath = file.substring(normalizedWs.length);
                 }
                 relPath = relPath.replace(/^[\/\\]/, '');
+
+                // Skip files if ANY of their parent directories are currently ignored (evaluating deepest rule)
+                const parts = relPath.split('/');
+                let currentDir = "";
+                let shouldIgnore = false;
+                for (let i = 0; i < parts.length - 1; i++) {
+                    currentDir = currentDir ? (currentDir + '/' + parts[i]) : parts[i];
+                    if (localIgnores.includes('DIR:' + currentDir)) {
+                        shouldIgnore = true;
+                    } else if (localIgnores.includes('EXCEPT:' + currentDir)) {
+                        shouldIgnore = false;
+                    }
+                }
+                
+                // Explicit file ignore overrides directory rules
+                if (localIgnores.includes(file)) {
+                    shouldIgnore = true;
+                } else if (localIgnores.includes('EXCEPT:' + relPath)) {
+                    shouldIgnore = false;
+                }
+
+                if (shouldIgnore) return;
+
+                const item = document.createElement('label');
+                item.className = 'file-tree-item';
 
                 // Default is unchecked for targeted selection UX
                 item.innerHTML = `
@@ -437,7 +751,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 `;
                 fileTreeContainer.appendChild(item);
             });
-        } catch(e) {
+        } catch (e) {
             fileTreeContainer.innerHTML = `<div class="err">Error loading tree: ${e}</div>`;
         }
     }
@@ -467,7 +781,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Contextual Minting
     btnMint.addEventListener('click', async () => {
         if (btnMint.classList.contains('disabled')) return;
-        
+
         if (!activeWorkspace) {
             alert("Error: Please select a Workspace Card from the right panel to specify the Minting Context.");
             return;
@@ -481,13 +795,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             alert("Error: No files selected in the current context view.");
             return;
         }
-        
+
         btnMint.classList.add('disabled');
         btnMint.querySelector('.btn-text').innerText = 'COMPUTING...';
         statusDot.classList.add('pulsing');
         body.classList.add('minting-mode');
         startMatrixRain();
-        
+
         try {
             // We switch to global view to show the result if we want, or stay in context. 
             // Better to show the hash result clearly.
@@ -504,16 +818,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (vc.error) {
                     appendLog(`[ORACLE ERROR] ${vc.error}`, 'err');
                 } else {
-        appendLog('\n\u2605\u2605\u2605 SESSION CREDENTIAL MINTED \u2605\u2605\u2605', 'sys');
+                    appendLog('\n\u2605\u2605\u2605 SESSION CREDENTIAL MINTED \u2605\u2605\u2605', 'sys');
                     appendLog(`[VC_ID]  ${vc.id}`, 'sys');
                     appendLog(`[ISSUER] ${vc.issuer?.substring(0, 60)}...`, 'sys');
                     appendLog(`[DATE]   ${vc.issuanceDate}`, 'sys');
                     appendLog(`[FILES]  ${vc.credentialSubject?.proofOfWork?.filePaths?.length || 0} files anchored`, 'sys');
-        appendLog('\n\u2192 View full credential in [ THE_LEDGER ] tab', 'sys');
+                    appendLog('\n\u2192 View full credential in [ THE_LEDGER ] tab', 'sys');
                 }
             } catch {
                 // Fallback: show raw if parse fails
-        appendLog('\n\u2605\u2605\u2605 SESSION CREDENTIAL MINTED \u2605\u2605\u2605', 'sys');
+                appendLog('\n\u2605\u2605\u2605 SESSION CREDENTIAL MINTED \u2605\u2605\u2605', 'sys');
                 appendLog(resultJSON.substring(0, 300) + '...', 'sys');
             }
         } catch (err) {
@@ -538,11 +852,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         const fontSize = 14;
         const columns = matrixCanvas.width / fontSize;
         const drops = [];
-        for (let x = 0; x < columns; x++) drops[x] = 1; 
+        for (let x = 0; x < columns; x++) drops[x] = 1;
         function draw() {
             ctx.fillStyle = 'rgba(11, 14, 20, 0.1)';
             ctx.fillRect(0, 0, matrixCanvas.width, matrixCanvas.height);
-            ctx.fillStyle = '#00FFCC'; 
+            ctx.fillStyle = '#00FFCC';
             ctx.font = fontSize + 'px monospace';
             for (let i = 0; i < drops.length; i++) {
                 const text = letters.charAt(Math.floor(Math.random() * letters.length));
@@ -643,10 +957,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const res = await fetch('http://localhost:11434', { signal: AbortSignal.timeout(3000) });
                 const ms = Date.now() - start;
                 engineDot.className = 'engine-dot online';
-            engineStatusText.innerText = `LOCAL node online \u2022 ms`;
+                engineStatusText.innerText = `LOCAL node online \u2022 ms`;
             } catch {
                 engineDot.className = 'engine-dot offline';
-            engineStatusText.innerText = 'LOCAL node offline -- start Ollama';
+                engineStatusText.innerText = 'LOCAL node offline -- start Ollama';
             }
         } else {
             // For cloud, we just verify API key is set
@@ -688,11 +1002,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     if (btnSettings) btnSettings.addEventListener('click', openIdentityModal);
     if (btnModalClose) btnModalClose.addEventListener('click', closeIdentityModal);
-    
+
     // Toggle Auto-Start logic
     const chkAutoStart = document.getElementById('chk-autostart');
     IsAutoStartEnabled().then(enabled => {
-        if(chkAutoStart) chkAutoStart.checked = enabled;
+        if (chkAutoStart) chkAutoStart.checked = enabled;
     });
     if (chkAutoStart) {
         chkAutoStart.addEventListener('change', async (e) => {
@@ -782,7 +1096,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (r.intact) {
                 chainStatusBar.classList.add('intact');
                 chainStatusIcon.className = 'chain-status-icon intact';
-        chainStatusIcon.innerText = '\u26d3'; // chains
+                chainStatusIcon.innerText = '\u26d3'; // chains
                 chainStatusLabel.innerText = 'CHAIN INTACT';
                 const parts = [];
                 if (r.total_blocks > 0) {
@@ -801,7 +1115,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     : '';
                 chainStats.innerText = r.message + (breakInfo ? ' \u00b7 ' + breakInfo : '');
             }
-        } catch(e) {
+        } catch (e) {
             chainStatusIcon.className = 'chain-status-icon broken';
             chainStatusIcon.innerText = '\u26a0'; // warning
             chainStatusLabel.innerText = 'VERIFY ERROR';
@@ -830,8 +1144,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 row.dataset.vcId = entry.vc_id;
 
                 const ts = new Date(entry.timestamp * 1000);
-                const dateStr = ts.toLocaleDateString('zh-CN', { year:'numeric', month:'2-digit', day:'2-digit' });
-                const timeStr = ts.toLocaleTimeString('zh-CN', { hour:'2-digit', minute:'2-digit' });
+                const dateStr = ts.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+                const timeStr = ts.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 
                 const projectName = entry.project_context
                     ? entry.project_context.split(/[\/\\]/).pop()
@@ -858,7 +1172,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 row.addEventListener('click', () => openDrawer(entry));
                 ledgerContainer.appendChild(row);
             });
-        } catch(e) {
+        } catch (e) {
             ledgerContainer.innerHTML = `<div style="color:#ff6666; font-size:0.8rem;">Error loading ledger: ${e}</div>`;
         }
     }
@@ -866,8 +1180,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     // ======== CREDENTIAL DRAWER ========
     function openDrawer(entry) {
         activeVcId = entry.vc_id;
-        activeProjectContext = entry.project_context 
-            ? entry.project_context.split(/[\/\\]/).pop() 
+        activeProjectContext = entry.project_context
+            ? entry.project_context.split(/[\/\\]/).pop()
             : 'Unknown Workspace';
 
         // Highlight selected row
@@ -908,7 +1222,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const defaultName = `verihash_credential_${safeVcId}.json`;
             const result = JSON.parse(await SaveToFile(defaultName, json));
             if (result.error) alert('Save failed: ' + result.error);
-        } catch(e) {
+        } catch (e) {
             alert('Export failed: ' + e);
         }
     });
@@ -924,8 +1238,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const res = JSON.parse(resJSON);
                 if (res.error) {
                     alert('Restoration error: ' + res.error);
+                } else if (res.degraded) {
+                    alert(`\u26A0 RECOVERY DEGRADED\n\nFound: ${res.found} blocks\nRecovered: ${res.restored} records.\n\nWARNING: The system detected multiple disjointed chains and spliced them together via Strict Mode topological rescue. Your cryptographic continuity may be interrupted at the splice points!`);
+                    if (viewLedger.style.display !== 'none') {
+                        renderLedger();
+                    }
                 } else {
-                    alert(`Data Reconstruction Complete!\n\nFound: ${res.found} blocks\nRestored: ${res.restored} new records.`);
+                    alert(`Data Reconstruction Complete!\n\nFound: ${res.found} blocks\nRestored: ${res.restored} new records.\nChain verified perfectly intact.`);
                     // Refresh current view if we're in the ledger
                     if (viewLedger.style.display !== 'none') {
                         renderLedger();
@@ -959,7 +1278,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 } else {
                     alert('Professional Audit Report generated successfully!\n\nCheck the "exports" folder in your VeriHash directory.');
                 }
-            } catch(e) {
+            } catch (e) {
                 alert('Connection failure: ' + e);
             } finally {
                 btnGenerateHtml.innerText = '[ GENERATE HTML REPORT ]';
@@ -985,14 +1304,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                     verifySigStatus.style.background = 'rgba(0,255,204,0.06)';
                     verifySigStatus.style.color = 'var(--primary)';
                     verifySigStatus.style.border = '1px solid rgba(0,255,204,0.25)';
-        verifySigStatus.innerText = '\u2713 SIGNATURE VALID \u2014 Ed25519 proof verified against issuer DID';
+                    verifySigStatus.innerText = '\u2713 SIGNATURE VALID \u2014 Ed25519 proof verified against issuer DID';
                 } else {
                     verifySigStatus.style.background = 'rgba(255,85,0,0.08)';
                     verifySigStatus.style.color = 'var(--warning)';
                     verifySigStatus.style.border = '1px solid rgba(255,85,0,0.4)';
-        verifySigStatus.innerText = '\u2715 SIGNATURE INVALID \u2014 ' + (result.error || 'Verification failed');
+                    verifySigStatus.innerText = '\u2715 SIGNATURE INVALID \u2014 ' + (result.error || 'Verification failed');
                 }
-            } catch(e) {
+            } catch (e) {
                 verifySigStatus.style.display = 'block';
                 verifySigStatus.style.color = 'var(--warning)';
                 verifySigStatus.innerText = '\u2715 Error: ' + e;
@@ -1033,7 +1352,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     revokeStatus.innerText = '\u2715 Revoke failed: ' + result.error;
                     return;
                 }
-    // Success -- show brief confirmation then close drawer and refresh
+                // Success -- show brief confirmation then close drawer and refresh
                 revokeStatus.style.display = 'block';
                 revokeStatus.style.background = 'rgba(0,255,204,0.06)';
                 revokeStatus.style.color = 'var(--primary)';
@@ -1047,7 +1366,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     renderLedger();
                 }, 1400);
 
-            } catch(e) {
+            } catch (e) {
                 revokeStatus.style.display = 'block';
                 revokeStatus.innerText = '\u2715 Error: ' + e;
             } finally {
@@ -1086,7 +1405,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     exportStatus.className = 'modal-status ok';
                     exportStatus.innerText = '\u2713 Encrypted bundle saved. It is encrypted with your current Vault Password.';
                 }
-            } catch(e) {
+            } catch (e) {
                 exportStatus.className = 'modal-status err';
                 exportStatus.innerText = '\u2715 Export failed: ' + e;
             } finally {
@@ -1134,7 +1453,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                             importStatus.innerHTML = `\u2713 Identity imported!<br>DID: <span style="color:#00cc88;font-size:0.65rem;word-break:break-all;">${result.did || ''}</span><br><br>Restart the app for the new identity to take effect.`;
                             document.getElementById('import-pwd').value = '';
                         }
-                    } catch(e) {
+                    } catch (e) {
                         importStatus.className = 'modal-status err';
                         importStatus.innerText = '\u2715 Import error: ' + e;
                     } finally {
@@ -1189,11 +1508,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 } else {
                     statusEl.className = 'modal-status ok';
                     statusEl.innerHTML = `\u2713 Identity Restored Successfully!<br>DID: <span style="color:#00cc88;font-size:0.65rem;word-break:break-all;">${result.did || ''}</span><br><br>Restarting node...`;
-                    
+
                     document.getElementById('mnemonic-input').value = '';
                     document.getElementById('restore-pwd').value = '';
                     document.getElementById('restore-pwd-confirm').value = '';
-                    
+
                     // Gracefully reboot the UI space because crypto layers in Wails are reset.
                     setTimeout(() => location.reload(), 2500);
                 }

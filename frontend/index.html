@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-    <meta charset="UTF-8"/>
-    <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+    <meta charset="UTF-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
     <title>VeriHash</title>
-    <link rel="stylesheet" href="./src/style.css"/>
+    <link rel="stylesheet" href="./src/style.css" />
 </head>
+
 <body id="app-body">
 
     <!-- ===== WALLET OVERLAY ===== -->
@@ -23,7 +25,7 @@
                 <div class="pwd-field-group">
                     <label class="pwd-label">VAULT PASSWORD</label>
                     <input type="password" class="pwd-input wallet-pwd-input" id="wallet-unlock-pwd"
-                           placeholder="Enter VAULT PASSWORD..." autocomplete="current-password">
+                        placeholder="Enter VAULT PASSWORD..." autocomplete="current-password">
                 </div>
                 <button class="wallet-btn" id="btn-wallet-unlock">[ UNLOCK VAULT ]</button>
                 <div class="wallet-status" id="wallet-unlock-status"></div>
@@ -31,11 +33,15 @@
 
             <!-- MNEMONIC screen (first run — recovery phrase) -->
             <div id="wallet-screen-mnemonic" class="wallet-screen" style="display:none;">
-                <p class="wallet-desc"><strong>CRYITICAL STEP:</strong> This is your 12-word recovery phrase. It is the ONLY way to recover your identity if you lose your password. <span style="color:var(--warning);">Write it down and store it offline.</span></p>
+                <p class="wallet-desc"><strong>CRYITICAL STEP:</strong> This is your 12-word recovery phrase. It is the
+                    ONLY way to recover your identity if you lose your password. <span
+                        style="color:var(--warning);">Write it down and store it offline.</span></p>
                 <div class="mnemonic-grid" id="mnemonic-display"></div>
-                <div class="pwd-field-group" style="margin-top: 15px; flex-direction: row; align-items: flex-start; gap: 10px;">
+                <div class="pwd-field-group"
+                    style="margin-top: 15px; flex-direction: row; align-items: flex-start; gap: 10px;">
                     <input type="checkbox" id="check-mnemonic-saved" style="margin-top: 4px; cursor: pointer;">
-                    <label for="check-mnemonic-saved" class="pwd-label" style="text-transform: none; cursor: pointer;">I have written down my recovery phrase and stored it in a safe place.</label>
+                    <label for="check-mnemonic-saved" class="pwd-label" style="text-transform: none; cursor: pointer;">I
+                        have written down my recovery phrase and stored it in a safe place.</label>
                 </div>
                 <button class="wallet-btn" id="btn-mnemonic-next" disabled>[ I HAVE SAVED IT — CONTINUE ]</button>
             </div>
@@ -43,16 +49,17 @@
             <!-- INIT screen (first run — new key) -->
             <div id="wallet-screen-init" class="wallet-screen" style="display:none;">
                 <p class="wallet-desc">Welcome! A new identity has been generated for you.<br>
-                Set a <strong>VAULT PASSWORD</strong> to encrypt it on disk. This password is required every time you open VeriHash.</p>
+                    Set a <strong>VAULT PASSWORD</strong> to encrypt it on disk. This password is required every time
+                    you open VeriHash.</p>
                 <div class="pwd-field-group">
                     <label class="pwd-label">SET VAULT PASSWORD</label>
                     <input type="password" class="pwd-input wallet-pwd-input" id="wallet-init-pwd"
-                           placeholder="Set a strong VAULT PASSWORD..." autocomplete="new-password">
+                        placeholder="Set a strong VAULT PASSWORD..." autocomplete="new-password">
                 </div>
                 <div class="pwd-field-group">
                     <label class="pwd-label">CONFIRM PASSWORD</label>
                     <input type="password" class="pwd-input wallet-pwd-input" id="wallet-init-pwd-confirm"
-                           placeholder="Confirm your password..." autocomplete="new-password">
+                        placeholder="Confirm your password..." autocomplete="new-password">
                 </div>
                 <button class="wallet-btn" id="btn-wallet-init">[ INITIALIZE VAULT ]</button>
                 <div class="wallet-status" id="wallet-init-status"></div>
@@ -60,17 +67,18 @@
 
             <!-- MIGRATE screen (existing plaintext key) -->
             <div id="wallet-screen-migrate" class="wallet-screen" style="display:none;">
-                <p class="wallet-desc">Your key is currently stored <strong style="color:#ffaa00;">unencrypted</strong> on disk.<br>
-                Set a VAULT PASSWORD to encrypt it now. This is a one-time migration.</p>
+                <p class="wallet-desc">Your key is currently stored <strong style="color:#ffaa00;">unencrypted</strong>
+                    on disk.<br>
+                    Set a VAULT PASSWORD to encrypt it now. This is a one-time migration.</p>
                 <div class="pwd-field-group">
                     <label class="pwd-label">NEW VAULT PASSWORD</label>
                     <input type="password" class="pwd-input wallet-pwd-input" id="wallet-migrate-pwd"
-                           placeholder="Set a strong VAULT PASSWORD..." autocomplete="new-password">
+                        placeholder="Set a strong VAULT PASSWORD..." autocomplete="new-password">
                 </div>
                 <div class="pwd-field-group">
                     <label class="pwd-label">CONFIRM PASSWORD</label>
                     <input type="password" class="pwd-input wallet-pwd-input" id="wallet-migrate-pwd-confirm"
-                           placeholder="Confirm your password..." autocomplete="new-password">
+                        placeholder="Confirm your password..." autocomplete="new-password">
                 </div>
                 <button class="wallet-btn" id="btn-wallet-migrate">[ ENCRYPT &amp; CONTINUE ]</button>
                 <div class="wallet-status" id="wallet-migrate-status"></div>
@@ -116,11 +124,27 @@
 
                     <!-- Focused Workspace View (Hidden by default) -->
                     <section class="workspace-view telemetry-panel" id="workspace-view" style="display: none;">
-                        <div class="panel-title" style="display: flex; justify-content: space-between; align-items: center;">
-                            <span>// CONTEXT_LOCK: <span id="active-workspace-name" style="color: #00ffcc;">None</span></span>
-                            <div class="tree-actions">
-                                <button class="cyber-btn sm" id="btn-select-all" style="font-size:0.6rem; padding: 2px 8px; border-style: dotted;">[ ALL ]</button>
-                                <button class="cyber-btn sm" id="btn-deselect-all" style="font-size:0.6rem; padding: 2px 8px; border-style: dotted;">[ NONE ]</button>
+                        <div class="panel-title"
+                            style="display: flex; justify-content: space-between; align-items: center;">
+                            <span>// CONTEXT_LOCK: <span id="active-workspace-name"
+                                    style="color: #00ffcc;">None</span></span>
+                            <div class="tree-actions" style="position: relative;">
+                                <button class="cyber-btn sm" id="btn-select-all"
+                                    style="font-size:0.6rem; padding: 2px 8px; border-style: dotted;">[ ALL ]</button>
+                                <button class="cyber-btn sm" id="btn-deselect-all"
+                                    style="font-size:0.6rem; padding: 2px 8px; border-style: dotted;">[ NONE ]</button>
+                                <button class="cyber-btn sm" id="btn-ignore-dir" 
+                                    style="font-size:0.6rem; padding: 2px 8px; border-style: dotted; border-color: rgba(255, 204, 0, 0.5); color: rgba(255, 204, 0, 0.8);">[ FILTER ▾ ]</button>
+
+                                <div id="dir-ignore-dropdown" style="display: none; position: absolute; top: 100%; right: 25px; margin-top: 5px; background: rgba(11, 14, 20, 0.95); border: 1px solid rgba(0, 255, 204, 0.3); padding: 10px; z-index: 100; min-width: 320px; font-size: 0.75rem; color: #aaa; box-shadow: 0 4px 10px rgba(0,0,0,0.5); text-align: left;">
+                                    <div style="margin-bottom: 6px; color: var(--primary); font-size: 0.65rem; border-bottom: 1px dashed rgba(0,255,204,0.3); padding-bottom: 4px; display: flex; justify-content: space-between;">
+                                        <span>CONTEXT FILTER TREE</span>
+                                        <span style="color: #666; font-size: 0.5rem; letter-spacing: 0;">Uncheck to form exceptions</span>
+                                    </div>
+                                    <div id="dir-ignore-list" style="max-height: 400px; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: 4px; padding-right: 4px;">
+                                        <!-- Checkboxes stream here -->
+                                    </div>
+                                </div>
                             </div>
                         </div>
                         <div class="file-tree-container" id="file-tree-container">
@@ -141,12 +165,18 @@
             <div class="view-panel" id="view-ledger" style="display: none;">
                 <div class="viewport-layer">
                     <section class="telemetry-panel" id="ledger-panel">
-                        <div class="panel-title" style="display: flex; justify-content: space-between; align-items: center;">
+                        <div class="panel-title"
+                            style="display: flex; justify-content: space-between; align-items: center;">
                             <span>// CREDENTIAL_ARCHIVE > IMMUTABLE_LOG</span>
                             <div style="display: flex; gap: 6px;">
-                                <button class="cyber-btn sm" id="btn-verify-chain" style="font-size:0.6rem; padding: 2px 10px; border-color: rgba(0,255,204,0.4);">[ VERIFY CHAIN ]</button>
-                                <button class="cyber-btn sm" id="btn-restore-history" style="font-size:0.6rem; padding: 2px 10px; border-style: dotted;">[ RESTORE ]</button>
-                                <button class="cyber-btn sm" id="btn-refresh-ledger" style="font-size:0.6rem; padding: 2px 10px;">[ REFRESH ]</button>
+                                <button class="cyber-btn sm" id="btn-verify-chain"
+                                    style="font-size:0.6rem; padding: 2px 10px; border-color: rgba(0,255,204,0.4);">[
+                                    VERIFY CHAIN ]</button>
+                                <button class="cyber-btn sm" id="btn-restore-history"
+                                    style="font-size:0.6rem; padding: 2px 10px; border-style: dotted;">[ RESTORE
+                                    ]</button>
+                                <button class="cyber-btn sm" id="btn-refresh-ledger"
+                                    style="font-size:0.6rem; padding: 2px 10px;">[ REFRESH ]</button>
                             </div>
                         </div>
                         <!-- Chain Integrity Status Bar -->
@@ -159,7 +189,8 @@
                         </div>
                         <div class="ledger-container" id="ledger-container">
                             <!-- Ledger entries stream here -->
-                            <div style="color: #888; font-size: 0.8rem; padding: 20px 0;">Loading credential archive...</div>
+                            <div style="color: #888; font-size: 0.8rem; padding: 20px 0;">Loading credential archive...
+                            </div>
                         </div>
                     </section>
                 </div>
@@ -167,27 +198,43 @@
                 <!-- Credential Detail Drawer (hidden until a record is selected) -->
                 <div class="credential-drawer" id="credential-drawer" style="display: none;">
                     <div class="drawer-header">
-                        <span id="drawer-vc-id" style="font-size: 0.7rem; color: #00ffcc; word-break: break-all;"></span>
-                        <button class="cyber-btn sm" id="btn-close-drawer" style="font-size: 0.6rem; padding: 2px 8px; flex-shrink: 0;">[ CLOSE ]</button>
+                        <span id="drawer-vc-id"
+                            style="font-size: 0.7rem; color: #00ffcc; word-break: break-all;"></span>
+                        <button class="cyber-btn sm" id="btn-close-drawer"
+                            style="font-size: 0.6rem; padding: 2px 8px; flex-shrink: 0;">[ CLOSE ]</button>
                     </div>
                     <div class="drawer-body">
-                        <div style="font-size: 0.7rem; color: #888; margin-bottom: 5px; display: flex; justify-content: space-between;">
+                        <div
+                            style="font-size: 0.7rem; color: #888; margin-bottom: 5px; display: flex; justify-content: space-between;">
                             <span>// AI_INSIGHT</span>
                             <span id="drawer-ai-engine" style="color: rgba(0,255,204,0.6);"></span>
                         </div>
-                        <div id="drawer-ai-insight" style="font-size: 0.82rem; color: #c0d0e0; margin-bottom: 15px; line-height: 1.6;"></div>
+                        <div id="drawer-ai-insight"
+                            style="font-size: 0.82rem; color: #c0d0e0; margin-bottom: 15px; line-height: 1.6;"></div>
                         <div style="font-size: 0.7rem; color: #888; margin-bottom: 5px;">// FILE_MANIFEST</div>
-                        <div id="drawer-file-paths" style="font-size: 0.75rem; color: #00ffcc88; line-height: 1.6; margin-bottom: 15px;"></div>
+                        <div id="drawer-file-paths"
+                            style="font-size: 0.75rem; color: #00ffcc88; line-height: 1.6; margin-bottom: 15px;"></div>
                     </div>
                     <div class="drawer-footer">
                         <div style="display: flex; gap: 8px;">
-                            <button class="cyber-btn sm" id="btn-export-json" style="flex: 1;">[ EXPORT JSON RECEIPT ]</button>
-                            <button class="cyber-btn sm" id="btn-generate-html" style="flex: 1;">[ GENERATE HTML REPORT ]</button>
-                            <button class="cyber-btn sm" id="btn-verify-sig" title="Cryptographically verify the Ed25519 signature on this credential" style="flex: 1; font-size: 0.65rem; border-color: rgba(0,255,204,0.35);">[ VERIFY SIGNATURE ]</button>
-                            <button class="cyber-btn sm revoke-btn" id="btn-revoke-credential" title="Soft-revoke this credential. The record is preserved in the database but removed from the active Ledger view.">[ REVOKE ]</button>
+                            <button class="cyber-btn sm" id="btn-export-json" style="flex: 1;">[ EXPORT JSON RECEIPT
+                                ]</button>
+                            <button class="cyber-btn sm" id="btn-generate-html" style="flex: 1;">[ GENERATE HTML REPORT
+                                ]</button>
+                            <button class="cyber-btn sm" id="btn-verify-sig"
+                                title="Cryptographically verify the Ed25519 signature on this credential"
+                                style="flex: 1; font-size: 0.65rem; border-color: rgba(0,255,204,0.35);">[ VERIFY
+                                SIGNATURE ]</button>
+                            <button class="cyber-btn sm revoke-btn" id="btn-revoke-credential"
+                                title="Soft-revoke this credential. The record is preserved in the database but removed from the active Ledger view.">[
+                                REVOKE ]</button>
                         </div>
-                        <div id="verify-sig-status" style="display:none; margin-top: 6px; font-size: 0.68rem; padding: 5px 10px; border-radius: 3px;"></div>
-                        <div id="revoke-status" style="display:none; margin-top: 8px; font-size: 0.7rem; padding: 5px 8px; border-radius: 3px;"></div>
+                        <div id="verify-sig-status"
+                            style="display:none; margin-top: 6px; font-size: 0.68rem; padding: 5px 10px; border-radius: 3px;">
+                        </div>
+                        <div id="revoke-status"
+                            style="display:none; margin-top: 8px; font-size: 0.7rem; padding: 5px 8px; border-radius: 3px;">
+                        </div>
                     </div>
                 </div>
             </div>
@@ -212,7 +259,8 @@
                             <div class="identity-actions">
                                 <span class="node-health" id="node-health">● SIGNAL: STRONG</span>
                                 <button class="icon-btn" id="btn-settings" title="Global Settings">⚙</button>
-                                <button class="icon-btn lock-btn" id="btn-lock" title="Lock Identity Vault" style="color: #ff6666;">🔒</button>
+                                <button class="icon-btn lock-btn" id="btn-lock" title="Lock Identity Vault"
+                                    style="color: #ff6666;">🔒</button>
                             </div>
                         </div>
                         <div class="did-row">
@@ -225,7 +273,9 @@
                     <!-- AI Context Engine (Custom Dropdown) -->
                     <section class="config-panel" style="margin-bottom: 0;">
                         <div class="input-group" style="margin-bottom: 15px;">
-                            <label>AI CONTEXT ENGINE <span id="ai-security-badge" style="float: right; color: #00ffcc; font-size: 0.6rem; margin-top: 2px;">[ 100% OFF-GRID ]</span></label>
+                            <label>AI CONTEXT ENGINE <span id="ai-security-badge"
+                                    style="float: right; color: #00ffcc; font-size: 0.6rem; margin-top: 2px;">[ 100%
+                                    OFF-GRID ]</span></label>
 
                             <!-- Custom cyber dropdown replaces native <select> -->
                             <div class="cyber-select" id="cyber-select">
@@ -264,14 +314,16 @@
                         <div id="cloud-config-group" style="display: none;">
                             <div class="input-group" style="margin-bottom: 15px;">
                                 <label>MODEL NAME</label>
-                                <input type="text" id="model-name" placeholder="e.g. gemini-2.5-flash / deepseek-chat..." value="gemini-2.0-flash" />
+                                <input type="text" id="model-name"
+                                    placeholder="e.g. gemini-2.5-flash / deepseek-chat..." value="gemini-2.0-flash" />
                             </div>
                             <div class="input-group" style="margin-bottom: 10px;">
                                 <label>API KEY</label>
                                 <input type="password" id="api-key" placeholder="Paste your API key here..." />
                             </div>
                             <div class="input-group" id="base-url-group" style="display: none; margin-bottom: 10px;">
-                                <label>BASE URL <span style="color: #888; font-size: 0.6rem;">(for Custom/DeepSeek)</span></label>
+                                <label>BASE URL <span style="color: #888; font-size: 0.6rem;">(for
+                                        Custom/DeepSeek)</span></label>
                                 <input type="text" id="base-url" placeholder="e.g. https://api.deepseek.com" />
                             </div>
                         </div>
@@ -279,16 +331,22 @@
                 </div>
 
                 <!-- BOTTOM BLOCK: Workspaces (Fluid Flow) -->
-                <div class="sidebar-bottom-section" style="flex: 1; display: flex; flex-direction: column; min-height: 0; padding-top: 5px;">
-                    <div class="input-group" style="flex: 1; display: flex; flex-direction: column; min-height: 0; margin-bottom: 0;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <div class="sidebar-bottom-section"
+                    style="flex: 1; display: flex; flex-direction: column; min-height: 0; padding-top: 5px;">
+                    <div class="input-group"
+                        style="flex: 1; display: flex; flex-direction: column; min-height: 0; margin-bottom: 0;">
+                        <div
+                            style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
                             <label style="margin-bottom: 0;">WORKSPACES (Drop to bind)</label>
-                            <button class="icon-btn flush-btn" id="btn-flush-stack" title="Clear all workspaces">✕ FLUSH</button>
+                            <button class="icon-btn flush-btn" id="btn-flush-stack" title="Clear all workspaces">✕
+                                FLUSH</button>
                         </div>
-                        <div class="workspace-stack" id="workspace-stack" style="flex: 1; overflow-y: auto; margin-bottom: 10px; padding-right: 5px;">
+                        <div class="workspace-stack" id="workspace-stack"
+                            style="flex: 1; overflow-y: auto; margin-bottom: 10px; padding-right: 5px;">
                             <!-- Workspace blocks stream here -->
                         </div>
-                        <button class="cyber-btn sm" id="btn-select-dir" style="width: 100%; border-style: dashed; flex-shrink: 0;">[ ADD TARGET ]</button>
+                        <button class="cyber-btn sm" id="btn-select-dir"
+                            style="width: 100%; border-style: dashed; flex-shrink: 0;">[ ADD TARGET ]</button>
                     </div>
                 </div>
 
@@ -310,18 +368,40 @@
                 <div class="modal-section">
                     <div class="modal-section-title">⚙ APPLICATION LIFECYCLE</div>
                     <div style="display: flex; align-items: center; gap: 10px; margin-top: 10px;">
-                        <input type="checkbox" id="chk-autostart" style="accent-color: #00ffcc; width: 16px; height: 16px; cursor: pointer;">
-                        <label for="chk-autostart" style="font-size: 0.8rem; color: #aaa; cursor: pointer;">Launch VeriHash silently on Windows Startup</label>
+                        <input type="checkbox" id="chk-autostart"
+                            style="accent-color: #00ffcc; width: 16px; height: 16px; cursor: pointer;">
+                        <label for="chk-autostart" style="font-size: 0.8rem; color: #aaa; cursor: pointer;">Launch
+                            VeriHash silently on Windows Startup</label>
+                    </div>
+                </div>
+
+                <!-- Watchdog Exclusions -->
+                <div class="modal-section" style="margin-top: 15px;">
+                    <div class="modal-section-title">// WATCHDOG EXCLUSIONS</div>
+                    <div class="modal-section-desc">Manual patterns to ignore (e.g. node_modules). Recursive by default.<br>System defaults (hidden files, desktop.ini, binaries) are automatically ignored.</div>
+                    
+                    <div class="exclusion-input-group" style="margin-top: 10px; display: flex; gap: 8px;">
+                        <input type="text" id="input-ignore-pattern" placeholder="Enter folder or filename (e.g. build)..." style="flex: 1; padding: 6px 10px; font-size: 0.8rem; background: rgba(0,0,0,0.3); border: 1px solid rgba(0,255,204,0.3); color: var(--primary); outline: none;">
+                        <button class="cyber-btn sm" id="btn-add-ignore" style="font-size: 0.65rem; padding: 0 10px;">[ + ADD ]</button>
+                    </div>
+                    
+                    <div id="ignore-patterns-container" class="ignore-tags-container" style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; max-height: 120px; overflow-y: auto; padding: 10px; background: rgba(0, 0, 0, 0.2); border: 1px dashed rgba(0, 255, 204, 0.1); border-radius: 4px;">
+                        <!-- JS manages tags here -->
+                        <div style="color: #666; font-size: 0.75rem; font-style: italic;">No manual exclusions set.</div>
                     </div>
                 </div>
 
                 <div class="modal-section" style="margin-top: 15px;">
-                    <div class="modal-section-title" style="display: flex; justify-content: space-between; align-items: center;">
+                    <div class="modal-section-title"
+                        style="display: flex; justify-content: space-between; align-items: center;">
                         <span>☁ MULTI-CLOUD SYNC DIRECTORIES</span>
-                        <button class="cyber-btn sm" id="btn-add-sync-dir" style="font-size: 0.6rem; padding: 2px 6px;">[ + MAPPING ]</button>
+                        <button class="cyber-btn sm" id="btn-add-sync-dir"
+                            style="font-size: 0.6rem; padding: 2px 6px;">[ + MAPPING ]</button>
                     </div>
-                    <div class="modal-section-desc">Active paths where Minted Credentials AND original files will be automatically mirrored after a successful mint.</div>
-                    <div id="sync-dirs-container" style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px; max-height: 120px; overflow-y: auto;">
+                    <div class="modal-section-desc">Active paths where Minted Credentials AND original files will be
+                        automatically mirrored after a successful mint.</div>
+                    <div id="sync-dirs-container"
+                        style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px; max-height: 120px; overflow-y: auto;">
                         <!-- Sync dirs rendered here by JS -->
                         <div style="color: #666; font-size: 0.75rem; font-style: italic;">No cloud mirrors bound.</div>
                     </div>
@@ -332,7 +412,10 @@
                 <!-- Export Section -->
                 <div class="modal-section">
                     <div class="modal-section-title">⬇ EXPORT IDENTITY BUNDLE</div>
-                    <div class="modal-section-desc">Exports an <strong>AES-256-GCM encrypted</strong> identity bundle. The file will be automatically encrypted with your current **Vault Password**. The file is useless without this password.<br><strong style="color:#ff9900;">&#x26A0; Note: Use the current password when importing this bundle on another machine.</strong></div>
+                    <div class="modal-section-desc">Exports an <strong>AES-256-GCM encrypted</strong> identity bundle.
+                        The file will be automatically encrypted with your current **Vault Password**. The file is
+                        useless without this password.<br><strong style="color:#ff9900;">&#x26A0; Note: Use the current
+                            password when importing this bundle on another machine.</strong></div>
                     <button class="modal-btn" id="btn-export-identity">⬇ &nbsp;EXPORT (ENCRYPTED)</button>
                     <div class="modal-status" id="export-status"></div>
                 </div>
@@ -342,12 +425,18 @@
                 <!-- Import Section -->
                 <div class="modal-section">
                     <div class="modal-section-title">⬆ IMPORT IDENTITY BUNDLE</div>
-                    <div class="modal-section-desc">Restore your identity from an encrypted bundle. Enter the backup password that was set when the bundle was exported. The system will verify key integrity before restoring.<br><strong style="color:#ff6666;">Note: A restart is required after import for the new identity to take effect.</strong></div>
+                    <div class="modal-section-desc">Restore your identity from an encrypted bundle. Enter the backup
+                        password that was set when the bundle was exported. The system will verify key integrity before
+                        restoring.<br><strong style="color:#ff6666;">Note: A restart is required after import for the
+                            new identity to take effect.</strong></div>
                     <div class="pwd-field-group">
                         <label class="pwd-label">BUNDLE PASSWORD</label>
-                        <input type="password" class="pwd-input" id="import-pwd" placeholder="Enter the backup password used during export..." autocomplete="current-password">
+                        <input type="password" class="pwd-input" id="import-pwd"
+                            placeholder="Enter the backup password used during export..."
+                            autocomplete="current-password">
                     </div>
-                    <button class="modal-btn danger" id="btn-import-identity">⬆ &nbsp;SELECT BUNDLE &amp; IMPORT</button>
+                    <button class="modal-btn danger" id="btn-import-identity">⬆ &nbsp;SELECT BUNDLE &amp;
+                        IMPORT</button>
                     <div class="modal-status" id="import-status"></div>
                 </div>
 
@@ -356,23 +445,31 @@
                 <!-- Restore from Phrase Section -->
                 <div class="modal-section">
                     <div class="modal-section-title" style="color:var(--warning);">⚠ RESTORE FROM RECOVERY PHRASE</div>
-                    <div class="modal-section-desc">Rebuild an identity mathematically using your original 12-word recovery phrase.<br><strong style="color:#ff6666;">This completely removes and replaces the current node identity! Set a new Vault Password to seal it.</strong></div>
-                    
+                    <div class="modal-section-desc">Rebuild an identity mathematically using your original 12-word
+                        recovery phrase.<br><strong style="color:#ff6666;">This completely removes and replaces the
+                            current node identity! Set a new Vault Password to seal it.</strong></div>
+
                     <div class="pwd-field-group">
                         <label class="pwd-label">12-WORD MNEMONIC</label>
-                        <textarea class="pwd-input" id="mnemonic-input" rows="2" placeholder="Paste your 12 words here separated by spaces..." style="resize:none; padding:10px; font-family:var(--font-mono);"></textarea>
+                        <textarea class="pwd-input" id="mnemonic-input" rows="2"
+                            placeholder="Paste your 12 words here separated by spaces..."
+                            style="resize:none; padding:10px; font-family:var(--font-mono);"></textarea>
                     </div>
 
                     <div class="pwd-field-group">
                         <label class="pwd-label">NEW VAULT PASSWORD</label>
-                        <input type="password" class="pwd-input" id="restore-pwd" placeholder="Set a new vault password..." autocomplete="new-password">
+                        <input type="password" class="pwd-input" id="restore-pwd"
+                            placeholder="Set a new vault password..." autocomplete="new-password">
                     </div>
                     <div class="pwd-field-group">
                         <label class="pwd-label">CONFIRM PASSWORD</label>
-                        <input type="password" class="pwd-input" id="restore-pwd-confirm" placeholder="Confirm new vault password..." autocomplete="new-password">
+                        <input type="password" class="pwd-input" id="restore-pwd-confirm"
+                            placeholder="Confirm new vault password..." autocomplete="new-password">
                     </div>
 
-                    <button class="modal-btn danger" id="btn-restore-mnemonic" style="border-color:var(--warning); color:var(--warning);">⚠ &nbsp;RESTORE NODE IDENTITY</button>
+                    <button class="modal-btn danger" id="btn-restore-mnemonic"
+                        style="border-color:var(--warning); color:var(--warning);">⚠ &nbsp;RESTORE NODE
+                        IDENTITY</button>
                     <div class="modal-status" id="restore-status"></div>
                 </div>
 
@@ -382,4 +479,5 @@
 
     <script src="./src/main.js" type="module"></script>
 </body>
+
 </html>
