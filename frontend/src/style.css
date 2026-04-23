@@ -568,6 +568,14 @@ select:focus {
     box-shadow: 0 0 10px rgba(0, 255, 204, 0.2);
 }
 
+/* Multi-select: additional workspaces selected via Ctrl/Shift+click */
+.workspace-card.multi-active {
+    border-color: var(--primary);
+    background: rgba(0, 255, 204, 0.12);
+    box-shadow: 0 0 6px rgba(0, 255, 204, 0.15);
+    border-style: dashed;
+}
+
 .workspace-card .path-text {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1475,4 +1483,34 @@ input[type="checkbox"].indeterminate-true::after {
     height: 5px;
     background-color: var(--primary);
     border-radius: 50%;
+}
+
+/* ===== CROSS-PROJECT FILE TREE GROUP HEADERS ===== */
+.workspace-group-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px 4px;
+    margin-top: 8px;
+    margin-bottom: 2px;
+    font-size: 0.62rem;
+    color: var(--primary);
+    letter-spacing: 1.5px;
+    border-bottom: 1px solid rgba(0, 255, 204, 0.25);
+    border-top: 1px dashed rgba(0, 255, 204, 0.1);
+    background: rgba(0, 255, 204, 0.03);
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    user-select: none;
+}
+
+.workspace-group-header:first-child {
+    margin-top: 0;
+    border-top: none;
+}
+
+.workspace-group-header .group-icon {
+    opacity: 0.8;
+    font-style: normal;
 }

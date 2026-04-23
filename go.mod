@@ -1,4 +1,4 @@
-module verihash_nexus
+module verihash
 
 go 1.24.0
 

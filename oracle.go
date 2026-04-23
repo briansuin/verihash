@@ -48,8 +48,9 @@ type CredentialSubject struct {
 // Names in the signed manifest are basenames only — full paths are moved to
 // the non-signed LocalMetadata block for backup recovery.
 type FileManifest struct {
-	Name   string `json:"name"`   // basename only, e.g. "contract.pdf"
-	SHA256 string `json:"sha256"` // hex-encoded SHA-256 of the file content
+	Name     string `json:"name"`     // basename only, e.g. "contract.pdf"
+	SHA256   string `json:"sha256"`   // hex-encoded SHA-256 of the file content
+	FileDate string `json:"fileDate"` // OS ModTime (YYYY-MM-DD), physical timestamp watermark
 }
 
 // LocalMetadata holds non-signed environment data (like full paths)
@@ -71,24 +72,24 @@ type ProofOfWork struct {
 }
 
 type Proof struct {
-	Type               string `json:"type"`
-	Created            string `json:"created"`
-	VerificationMode   string `json:"verificationMethod"`
-	ProofPurpose       string `json:"proofPurpose"`
-	PreviousVCHash     string `json:"previousVCHash,omitempty"`
-	ProofValue         string `json:"proofValue"`
+	Type             string `json:"type"`
+	Created          string `json:"created"`
+	VerificationMode string `json:"verificationMethod"`
+	ProofPurpose     string `json:"proofPurpose"`
+	PreviousVCHash   string `json:"previousVCHash,omitempty"`
+	ProofValue       string `json:"proofValue"`
 }
 
 // VCSigningPayload is the canonical document that is signed.
 // It covers all VC fields PLUS proof metadata (excluding proofValue),
 // so the signature protects chain linkage and every header field.
 type VCSigningPayload struct {
-	Context           []string          `json:"@context"`
-	ID                string            `json:"id"`
-	Type              []string          `json:"type"`
-	Issuer            string            `json:"issuer"`
-	IssuanceDate      string            `json:"issuanceDate"`
-	CredentialSubject CredentialSubject `json:"credentialSubject"`
+	Context           []string           `json:"@context"`
+	ID                string             `json:"id"`
+	Type              []string           `json:"type"`
+	Issuer            string             `json:"issuer"`
+	IssuanceDate      string             `json:"issuanceDate"`
+	CredentialSubject CredentialSubject  `json:"credentialSubject"`
 	ProofMeta         VCSigningProofMeta `json:"proofMeta"`
 }
 
@@ -136,7 +137,9 @@ func MintCredential(ctx context.Context, db *VeriHashDB, pubKey ed25519.PublicKe
 			// Check if content is printable text (heuristic: <5% non-printable bytes)
 			nonPrintable := 0
 			checkLen := len(excerpt)
-			if checkLen > 512 { checkLen = 512 }
+			if checkLen > 512 {
+				checkLen = 512
+			}
 			for _, b := range excerpt[:checkLen] {
 				if b < 9 || (b > 13 && b < 32) || b == 127 {
 					nonPrintable++
@@ -161,19 +164,23 @@ func MintCredential(ctx context.Context, db *VeriHashDB, pubKey ed25519.PublicKe
 	runtime.EventsEmit(ctx, "log", map[string]string{"msg": fmt.Sprintf("[ORACLE] Assembling %d physical blocks for tailored AI evaluation...", len(snapshots)), "type": "sys"})
 
 	// 2. Prepare AI Context — strict token budget
-	const maxCharsPerFile = 3000  // ~750 tokens per file
-	const maxTotalChars  = 60000  // ~15K tokens total hard cap
+	const maxCharsPerFile = 3000 // ~750 tokens per file
+	const maxTotalChars = 60000  // ~15K tokens total hard cap
 	var contextBuilder strings.Builder
 	seenPaths := map[string]bool{}
-	var fullPaths []string     // kept for DB storage only — never goes into VC
+	var fullPaths []string          // kept for DB storage only — never goes into VC
 	var fileManifest []FileManifest // name+hash — goes into the signed VC
 	var minTs, maxTs float64 = snapshots[0].Timestamp, snapshots[0].Timestamp
 	latestHash := snapshots[0].CurrentHash
 	totalChars := 0
 
 	for _, s := range snapshots {
-		if s.Timestamp < minTs { minTs = s.Timestamp }
-		if s.Timestamp > maxTs { maxTs = s.Timestamp }
+		if s.Timestamp < minTs {
+			minTs = s.Timestamp
+		}
+		if s.Timestamp > maxTs {
+			maxTs = s.Timestamp
+		}
 
 		// Uniquify by full path (for DB), build manifest entry per unique file
 		if !seenPaths[s.FilePath] {
@@ -194,8 +201,12 @@ func MintCredential(ctx context.Context, db *VeriHashDB, pubKey ed25519.PublicKe
 			break
 		}
 
-		// Use basename only in AI prompt — no paths leave the machine
-		contextBuilder.WriteString(fmt.Sprintf("--- File: %s ---\nContent:\n%s\n\n", filepath.Base(s.FilePath), excerpt))
+		// Inject physical OS ModTime into AI context for temporal awareness
+		fileLabel := filepath.Base(s.FilePath)
+		if info, statErr := os.Stat(s.FilePath); statErr == nil {
+			fileLabel = fmt.Sprintf("%s (OS Modified: %s)", fileLabel, info.ModTime().Format("2006-01-02"))
+		}
+		contextBuilder.WriteString(fmt.Sprintf("--- File: %s ---\nContent:\n%s\n\n", fileLabel, excerpt))
 		totalChars += len(excerpt)
 	}
 
@@ -219,13 +230,14 @@ Output strictly in this format:
 2. The TECHNICAL or PROFESSIONAL SCOPE addressed (e.g., Backend Scaling, UI/UX Refinement, Financial Compliance).
 3. The NATURE of the contribution (e.g., Optimization, Strategic Planning, Document Auditing).
 4. The TYPES of stakeholders or entities involved (e.g., Enterprise Client, Individual End-user, Institutional Partner).
+5. The HISTORICAL TIMELINE or ERA of the work (e.g., explicitly highlight if the documents originate from past decades, demonstrating long-term professional continuity).
 Adhere strictly to privacy rules.)
 
 [VERIFIED SKILL TAGS]
 * tag1
 * tag2
 
-FILE MANIFEST:
+FILE MANIFEST (each file listed with its physical OS modification date as a tamper-evident timestamp):
 %s`, contextBuilder.String())
 
 	var aiResult string
@@ -239,20 +251,24 @@ FILE MANIFEST:
 	}
 
 	runtime.EventsEmit(ctx, "log", map[string]string{
-		"msg": fmt.Sprintf("[ORACLE] Igniting AI Engine: %s / %s", strings.ToUpper(provider), modelName),
+		"msg":  fmt.Sprintf("[ORACLE] Igniting AI Engine: %s / %s", strings.ToUpper(provider), modelName),
 		"type": "sys",
 	})
 
 	switch provider {
 	case "gemini":
-		if modelName == "" { modelName = "gemini-2.0-flash" }
+		if modelName == "" {
+			modelName = "gemini-2.0-flash"
+		}
 		if apiKey == "" {
 			return `{"error": "Missing Gemini API Key"}`
 		}
 		aiResult, err = callGemini(prompt, apiKey, modelName)
 
 	case "deepseek":
-		if modelName == "" { modelName = "deepseek-chat" }
+		if modelName == "" {
+			modelName = "deepseek-chat"
+		}
 		if apiKey == "" {
 			return `{"error": "Missing DeepSeek API Key"}`
 		}
@@ -260,7 +276,9 @@ FILE MANIFEST:
 
 	case "qwen":
 		// Alibaba Qwen via DashScope OpenAI-compatible endpoint
-		if modelName == "" { modelName = "qwen-turbo" }
+		if modelName == "" {
+			modelName = "qwen-turbo"
+		}
 		if apiKey == "" {
 			return `{"error": "Missing Qwen (DashScope) API Key"}`
 		}
@@ -268,24 +286,66 @@ FILE MANIFEST:
 
 	case "minimax":
 		// MiniMax OpenAI-compatible endpoint
-		if modelName == "" { modelName = "MiniMax-Text-01" }
+		if modelName == "" {
+			modelName = "MiniMax-Text-01"
+		}
 		if apiKey == "" {
 			return `{"error": "Missing MiniMax API Key"}`
 		}
 		aiResult, err = callOpenAICompat(prompt, apiKey, modelName, "https://api.minimax.chat")
 
 	case "openai":
-		if modelName == "" { modelName = "gpt-4o-mini" }
+		if modelName == "" {
+			modelName = "gpt-4o-mini"
+		}
 		if apiKey == "" {
 			return `{"error": "Missing OpenAI API Key"}`
 		}
 		aiResult, err = callOpenAICompat(prompt, apiKey, modelName, "https://api.openai.com")
 
+	case "claude":
+		if modelName == "" {
+			modelName = "claude-3-5-sonnet-20241022"
+		}
+		if apiKey == "" {
+			return `{"error": "Missing Anthropic API Key"}`
+		}
+		aiResult, err = callClaude(prompt, apiKey, modelName)
+
+	case "kimi":
+		if modelName == "" {
+			modelName = "moonshot-v1-8k"
+		}
+		if apiKey == "" {
+			return `{"error": "Missing Kimi (Moonshot) API Key"}`
+		}
+		aiResult, err = callOpenAICompat(prompt, apiKey, modelName, "https://api.moonshot.cn")
+
+	case "siliconflow":
+		if modelName == "" {
+			modelName = "deepseek-ai/DeepSeek-V3"
+		}
+		if apiKey == "" {
+			return `{"error": "Missing SiliconFlow API Key"}`
+		}
+		aiResult, err = callOpenAICompat(prompt, apiKey, modelName, "https://api.siliconflow.cn")
+
+	case "mistral":
+		if modelName == "" {
+			modelName = "mistral-large-latest"
+		}
+		if apiKey == "" {
+			return `{"error": "Missing Mistral API Key"}`
+		}
+		aiResult, err = callOpenAICompat(prompt, apiKey, modelName, "https://api.mistral.ai")
+
 	case "custom":
 		if baseURL == "" {
 			return `{"error": "Custom endpoint requires a Base URL"}`
 		}
-		if modelName == "" { modelName = "default" }
+		if modelName == "" {
+			modelName = "default"
+		}
 		aiResult, err = callOpenAICompat(prompt, apiKey, modelName, baseURL)
 
 	default: // ollama or any unknown
@@ -301,7 +361,7 @@ FILE MANIFEST:
 
 	// 4. Forge Verifiable Credential
 	vcID := "urn:uuid:" + computeSHA256(fmt.Sprintf("%d", time.Now().UnixNano()))
-	issuerDID := pubKeyToDIDKey(pubKey)  // W3C did:key format
+	issuerDID := pubKeyToDIDKey(pubKey) // W3C did:key format
 	nowISO := time.Now().Format(time.RFC3339)
 
 	aiEngineUsed := strings.ToUpper(provider)
@@ -310,10 +370,10 @@ FILE MANIFEST:
 	}
 
 	vc := VCSchema{
-		Context: []string{"https://www.w3.org/2018/credentials/v1"},
-		ID:      vcID,
-		Type:    []string{"VerifiableCredential", "ProofOfWorkCredential"},
-		Issuer:  issuerDID,
+		Context:      []string{"https://www.w3.org/2018/credentials/v1"},
+		ID:           vcID,
+		Type:         []string{"VerifiableCredential", "ProofOfWorkCredential"},
+		Issuer:       issuerDID,
 		IssuanceDate: nowISO,
 		CredentialSubject: CredentialSubject{
 			ID: issuerDID,
@@ -368,15 +428,15 @@ FILE MANIFEST:
 
 	// 6. Save credential to the Ledger database atomically while GCing consumed snapshots
 	vcHash := computeSHA256(vcID + "|" + prevVCHash + "|" + string(finalJSON))
-	
+
 	filePathsStr := strings.Join(fullPaths, ",")
-	
+
 	tx, err := db.conn.Begin()
 	if err != nil {
 		runtime.EventsEmit(ctx, "log", map[string]string{"msg": fmt.Sprintf("[ORACLE ERROR] Transaction start failed: %v", err), "type": "err"})
 		return `{"error": "Database transaction failure"}`
 	}
-	
+
 	_, dbErr := tx.Exec(`
 		INSERT OR IGNORE INTO session_credentials
 		(vc_id, timestamp, project_context, ai_insight, skill_tags, file_paths, full_vc_json, status, vc_hash, prev_vc_hash)
@@ -392,35 +452,37 @@ FILE MANIFEST:
 		vcHash,
 		prevVCHash,
 	)
-	
+
 	if dbErr != nil {
 		tx.Rollback()
 		runtime.EventsEmit(ctx, "log", map[string]string{"msg": fmt.Sprintf("[ORACLE ERROR] Failed to save to ledger: %v", dbErr), "type": "err"})
 		return `{"error": "Database insertion failure"}`
 	}
-	
+
 	// Atomic Precision GC: Kill exclusively the fast-fetched consumed Snapshot IDs
 	var snapshotIDs []interface{}
 	placeholders := ""
 	for i, s := range snapshots {
-	    if i > 0 { placeholders += "," }
-	    placeholders += "?"
-	    snapshotIDs = append(snapshotIDs, s.ID)
+		if i > 0 {
+			placeholders += ","
+		}
+		placeholders += "?"
+		snapshotIDs = append(snapshotIDs, s.ID)
 	}
-	
+
 	_, gcErr := tx.Exec(fmt.Sprintf(`DELETE FROM file_snapshots WHERE id IN (%s)`, placeholders), snapshotIDs...)
 	if gcErr != nil {
-	    tx.Rollback()
-	    runtime.EventsEmit(ctx, "log", map[string]string{"msg": fmt.Sprintf("[ORACLE ERROR] GC failed: %v", gcErr), "type": "err"})
-	    return `{"error": "Garbage collection failure"}`
+		tx.Rollback()
+		runtime.EventsEmit(ctx, "log", map[string]string{"msg": fmt.Sprintf("[ORACLE ERROR] GC failed: %v", gcErr), "type": "err"})
+		return `{"error": "Garbage collection failure"}`
 	}
-	
+
 	commitErr := tx.Commit()
 	if commitErr != nil {
-	    runtime.EventsEmit(ctx, "log", map[string]string{"msg": fmt.Sprintf("[ORACLE ERROR] TX Commit failed: %v", commitErr), "type": "err"})
-	    return `{"error": "Database commit failure"}`
+		runtime.EventsEmit(ctx, "log", map[string]string{"msg": fmt.Sprintf("[ORACLE ERROR] TX Commit failed: %v", commitErr), "type": "err"})
+		return `{"error": "Database commit failure"}`
 	}
-	
+
 	runtime.EventsEmit(ctx, "log", map[string]string{"msg": fmt.Sprintf("[ORACLE] Credential anchored \u2713 | Exhaust Cleaned | Block: %s...", vcHash[:16]), "type": "sys"})
 
 	return string(finalJSON)
@@ -478,7 +540,9 @@ func verifyCredentialDoc(vcJSON string) (bool, string) {
 }
 
 // buildFileManifest creates a privacy-safe file record containing only the
-// file's basename and its SHA-256 content hash. Full paths never leave the machine.
+// file's basename, its SHA-256 content hash, and the OS physical modification
+// date (YYYY-MM-DD) as a tamper-evident timestamp watermark.
+// Full paths never leave the machine.
 func buildFileManifest(fullPath string) FileManifest {
 	h := sha256.New()
 	f, err := os.Open(fullPath)
@@ -486,12 +550,17 @@ func buildFileManifest(fullPath string) FileManifest {
 		_, _ = io.Copy(h, f)
 		f.Close()
 	}
+	// Read the physical OS modification time as a verifiable date anchor
+	fileDate := ""
+	if info, statErr := os.Stat(fullPath); statErr == nil {
+		fileDate = info.ModTime().Format("2006-01-02")
+	}
 	return FileManifest{
-		Name:   filepath.Base(fullPath),
-		SHA256: hex.EncodeToString(h.Sum(nil)),
+		Name:     filepath.Base(fullPath),
+		SHA256:   hex.EncodeToString(h.Sum(nil)),
+		FileDate: fileDate,
 	}
 }
-
 
 func getLatestSnapshots(db *VeriHashDB, limit int) ([]Snapshot, error) {
 	rows, err := db.conn.Query("SELECT id, timestamp, file_path, content_diff, current_hash, previous_hash FROM file_snapshots ORDER BY id DESC LIMIT ?", limit)
@@ -538,7 +607,7 @@ func callOllama(prompt string) (string, error) {
 	return strings.TrimSpace(resPayload.Response), nil
 }
 
-// Gemini specific payloads 
+// Gemini specific payloads
 type GeminiRequest struct {
 	Contents []GeminiContent `json:"contents"`
 }
@@ -554,9 +623,9 @@ type GeminiPart struct {
 func callGemini(prompt, apiKey, modelName string) (string, error) {
 	client := resty.New()
 	client.SetTimeout(120 * time.Second)
-	
+
 	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", modelName, apiKey)
-	
+
 	reqPayload := GeminiRequest{
 		Contents: []GeminiContent{
 			{
@@ -566,22 +635,22 @@ func callGemini(prompt, apiKey, modelName string) (string, error) {
 			},
 		},
 	}
-	
+
 	var resPayload map[string]interface{}
-	
+
 	resp, err := client.R().
 		SetHeader("Content-Type", "application/json").
 		SetBody(reqPayload).
 		SetResult(&resPayload).
 		Post(url)
-		
+
 	if err != nil {
 		return "", err
 	}
 	if resp.IsError() {
 		return "", fmt.Errorf("gemini API returned status %d: %s", resp.StatusCode(), resp.String())
 	}
-	
+
 	// Parse nested response from Gemini
 	candidates, ok := resPayload["candidates"].([]interface{})
 	if ok && len(candidates) > 0 {
@@ -598,7 +667,7 @@ func callGemini(prompt, apiKey, modelName string) (string, error) {
 			}
 		}
 	}
-	
+
 	return "", fmt.Errorf("failed to parse gemini response")
 }
 
@@ -648,3 +717,74 @@ func callOpenAICompat(prompt, apiKey, modelName, baseURL string) (string, error)
 
 	return "", fmt.Errorf("failed to parse OpenAI-compat response")
 }
+
+// Anthropic Claude specific payloads
+type ClaudeRequest struct {
+	Model     string          `json:"model"`
+	MaxTokens int             `json:"max_tokens"`
+	Messages  []ClaudeMessage `json:"messages"`
+}
+
+type ClaudeMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type ClaudeResponse struct {
+	Content []ClaudeContent `json:"content"`
+	Error   *ClaudeError    `json:"error,omitempty"`
+}
+
+type ClaudeContent struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type ClaudeError struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+func callClaude(prompt, apiKey, modelName string) (string, error) {
+	client := resty.New()
+	client.SetTimeout(120 * time.Second)
+
+	url := "https://api.anthropic.com/v1/messages"
+
+	reqPayload := ClaudeRequest{
+		Model:     modelName,
+		MaxTokens: 1024,
+		Messages: []ClaudeMessage{
+			{Role: "user", Content: prompt},
+		},
+	}
+
+	var resPayload ClaudeResponse
+
+	resp, err := client.R().
+		SetHeader("Content-Type", "application/json").
+		SetHeader("x-api-key", apiKey).
+		SetHeader("anthropic-version", "2023-06-01").
+		SetBody(reqPayload).
+		SetResult(&resPayload).
+		Post(url)
+
+	if err != nil {
+		return "", err
+	}
+
+	if resPayload.Error != nil {
+		return "", fmt.Errorf("anthropic API error (%s): %s", resPayload.Error.Type, resPayload.Error.Message)
+	}
+
+	if resp.IsError() {
+		return "", fmt.Errorf("anthropic API returned status %d: %s", resp.StatusCode(), resp.String())
+	}
+
+	if len(resPayload.Content) > 0 {
+		return strings.TrimSpace(resPayload.Content[0].Text), nil
+	}
+
+	return "", fmt.Errorf("failed to parse Claude response")
+}
+

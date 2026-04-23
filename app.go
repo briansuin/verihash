@@ -19,15 +19,16 @@ import (
 
 // Config represents persistent application settings
 type Config struct {
-	Workspaces    []string            `json:"workspaces"`
-	AIEngine      string              `json:"ai_engine"`
-	ModelName     string              `json:"model_name"`
-	APIKey        string              `json:"api_key"`
-	BaseURL       string              `json:"base_url"`
-	AutoStart     bool                `json:"auto_start"`
-	CloudSyncDirs []string            `json:"cloud_sync_dirs"`
-	IgnoredPatterns []string          `json:"ignored_patterns"`
+	Workspaces      []string            `json:"workspaces"`
+	AIEngine        string              `json:"ai_engine"`
+	ModelName       string              `json:"model_name"`
+	APIKey          string              `json:"api_key"`
+	BaseURL         string              `json:"base_url"`
+	AutoStart       bool                `json:"auto_start"`
+	CloudSyncDirs   []string            `json:"cloud_sync_dirs"`
+	IgnoredPatterns []string            `json:"ignored_patterns"`
 	SessionIgnores  map[string][]string `json:"session_ignores"`
+	GitHubPAT       string              `json:"github_pat"`       // GitHub Personal Access Token (gist scope)
 }
 
 // LedgerEntry is a summary row of a past minting session
@@ -40,23 +41,25 @@ type LedgerEntry struct {
 	Status         int     `json:"status"`
 	VcHash         string  `json:"vc_hash"`
 	AiEngine       string  `json:"ai_engine"`
+	FullVcJson     string  `json:"full_vc_json"` // full signed VC JSON, used by UI to render FileManifest with FileDates
 }
 
 // App struct
 type App struct {
-	ctx           context.Context
-	db            *VeriHashDB
-	pubKey        ed25519.PublicKey
-	privKey       ed25519.PrivateKey
-	walletStatus  WalletStatus // current key file state
-	mnemonic      string       // temporary storage for new wallet mnemonic
-	watchDirs     []string
-	aiEngine      string
-	modelName     string
-	apiKey        string
-	baseURL         string
-	cloudSyncDirs   []string
-	ignoredPatterns []string
+	ctx              context.Context
+	db               *VeriHashDB
+	pubKey           ed25519.PublicKey
+	privKey          ed25519.PrivateKey
+	walletStatus     WalletStatus // current key file state
+	mnemonic         string       // temporary storage for new wallet mnemonic
+	watchDirs        []string
+	aiEngine         string
+	modelName        string
+	apiKey           string
+	baseURL          string
+	cloudSyncDirs    []string
+	ignoredPatterns  []string
+	broadcastManager *BroadcastManager
 }
 
 // NewApp creates a new App application struct
@@ -119,9 +122,16 @@ func (a *App) startup(ctx context.Context) {
 	runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[SYSTEM] Booting VeriHash Core...", "type": "sys"})
 
 	// 3. Load config so cloudSyncDirs are available at startup
-	a.LoadConfig()
+	cfg := a.LoadConfig()
 
-	// 4. Silently repair the historic JSON chain on all bound cloud directories in background
+	// 4. Initialize BroadcastManager with registered channels
+	a.broadcastManager = NewBroadcastManager(a.db)
+	if cfg.GitHubPAT != "" {
+		a.broadcastManager.RegisterBroadcaster(NewGitHubGistBroadcaster(cfg.GitHubPAT))
+		runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[BROADCAST] GitHub Gist channel registered.", "type": "sys"})
+	}
+
+	// 5. Silently repair the historic JSON chain on all bound cloud directories in background
 	if len(a.cloudSyncDirs) > 0 {
 		go func() {
 			for _, dir := range a.cloudSyncDirs {
@@ -268,6 +278,10 @@ func (a *App) LoadConfig() Config {
 		a.baseURL = cfg.BaseURL
 		a.cloudSyncDirs = cfg.CloudSyncDirs
 		a.ignoredPatterns = cfg.IgnoredPatterns
+		// Re-register GitHub Gist broadcaster whenever config reloads
+		if a.broadcastManager != nil && cfg.GitHubPAT != "" {
+			a.broadcastManager.RegisterBroadcaster(NewGitHubGistBroadcaster(cfg.GitHubPAT))
+		}
 	}
 	return cfg
 }
@@ -316,8 +330,34 @@ func (a *App) SelectDirectory() string {
 	return dir
 }
 
-// SaveConfig stores the AI and UI configuration in memory and JSON disk
-func (a *App) SaveConfig(workspaces []string, engine, modelName, key, baseURL string, cloudSyncDirs []string) string {
+// ResolveDroppedPath checks whether a drag-and-dropped path is a file or directory.
+// If it is a regular file, the parent directory is returned along with a "file" type hint.
+// If it is already a directory, it is returned as-is with a "dir" type hint.
+// Returns a JSON object: { "path": "...", "type": "dir"|"file", "name": "..." }
+func (a *App) ResolveDroppedPath(droppedPath string) string {
+	info, err := os.Stat(droppedPath)
+	if err != nil {
+		return `{"error": "Path not found: ` + strings.ReplaceAll(err.Error(), `"`, `'`) + `"}`
+	}
+	if info.IsDir() {
+		name := filepath.Base(droppedPath)
+		return `{"path": ` + jsonString(droppedPath) + `, "type": "dir", "name": ` + jsonString(name) + `}`
+	}
+	// It's a file — return parent directory and the original filename as context
+	parentDir := filepath.Dir(droppedPath)
+	name := info.Name()
+	return `{"path": ` + jsonString(parentDir) + `, "type": "file", "name": ` + jsonString(name) + `}`
+}
+
+// jsonString safely encodes a string value for embedding in a JSON literal.
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+// SaveConfig stores the AI and UI configuration in memory and JSON disk.
+// gitHubPAT is stored as-is; pass an empty string to leave the existing PAT unchanged.
+func (a *App) SaveConfig(workspaces []string, engine, modelName, key, baseURL string, cloudSyncDirs []string, gitHubPAT string) string {
 	a.watchDirs = workspaces
 	a.aiEngine = engine
 	a.modelName = modelName
@@ -325,10 +365,16 @@ func (a *App) SaveConfig(workspaces []string, engine, modelName, key, baseURL st
 	a.baseURL = baseURL
 	a.cloudSyncDirs = cloudSyncDirs
 
-	// Preserve fields not managed by this call (e.g. AutoStart set by ToggleAutoStart)
+	// Preserve fields not managed by this call
 	var existingCfg Config
 	if existingBytes, err := os.ReadFile("verihash_config.json"); err == nil {
 		json.Unmarshal(existingBytes, &existingCfg)
+	}
+
+	// Keep existing PAT if caller passes empty string (avoids UI accidentally clearing it)
+	pat := gitHubPAT
+	if pat == "" {
+		pat = existingCfg.GitHubPAT
 	}
 
 	cfg := Config{
@@ -341,9 +387,16 @@ func (a *App) SaveConfig(workspaces []string, engine, modelName, key, baseURL st
 		IgnoredPatterns: existingCfg.IgnoredPatterns, // preserve
 		AutoStart:       existingCfg.AutoStart,       // preserve
 		SessionIgnores:  existingCfg.SessionIgnores,  // preserve local filters
+		GitHubPAT:       pat,
 	}
 	bytes, _ := json.MarshalIndent(cfg, "", "  ")
 	os.WriteFile("verihash_config.json", bytes, 0644)
+
+	// Re-register broadcaster with new PAT immediately
+	if a.broadcastManager != nil && pat != "" {
+		a.broadcastManager.RegisterBroadcaster(NewGitHubGistBroadcaster(pat))
+	}
+
 	return "OK"
 }
 
@@ -413,7 +466,9 @@ func (a *App) SaveSessionIgnores(ws string, rules []string) string {
 	return "OK"
 }
 
-// TriggerMint runs the Oracle evaluation for specifically checked files
+// TriggerMint runs the Oracle evaluation for specifically checked files.
+// workspacePath may be a single path or multiple paths joined by "|" for cross-project minting.
+// When multiple paths are provided, ProjectContext is set to the combined basename label.
 func (a *App) TriggerMint(selectedFiles []string, workspacePath string) string {
 	if a.walletIsLocked() {
 		return `{"error": "Wallet is locked. Enter your wallet password to unlock."}`
@@ -425,15 +480,43 @@ func (a *App) TriggerMint(selectedFiles []string, workspacePath string) string {
 	if a.aiEngine != "ollama" && a.modelName != "" {
 		engineParam = a.aiEngine + ":" + a.modelName
 	}
-	result := MintCredential(a.ctx, a.db, a.pubKey, a.privKey, engineParam, a.apiKey, a.baseURL, selectedFiles, workspacePath)
 
-	// If successful and we have Cloud Sync Dirs configured, trigger replication
-	if !strings.Contains(result, `"error":`) && len(a.cloudSyncDirs) > 0 {
+	// Build a human-readable ProjectContext from all workspace basenames
+	// e.g. "ProjectA | ProjectB" when multiple workspaces are selected
+	mintContext := workspacePath
+	wsPaths := strings.Split(workspacePath, "|")
+	if len(wsPaths) > 1 {
+		var names []string
+		for _, p := range wsPaths {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				names = append(names, filepath.Base(p))
+			}
+		}
+		mintContext = strings.Join(names, " + ")
+	} else {
+		mintContext = filepath.Base(strings.TrimSpace(workspacePath))
+	}
+
+	result := MintCredential(a.ctx, a.db, a.pubKey, a.privKey, engineParam, a.apiKey, a.baseURL, selectedFiles, mintContext)
+
+	// If successful, trigger cloud sync and broadcast
+	if !strings.Contains(result, `"error":`) {
 		var parseResult map[string]interface{}
 		if err := json.Unmarshal([]byte(result), &parseResult); err == nil {
 			// VC JSON uses "id" not "vc_id"
 			if vcID, ok := parseResult["id"].(string); ok {
-				go a.replicateToCloud(vcID)
+				if len(a.cloudSyncDirs) > 0 {
+					go a.replicateToCloud(vcID)
+				}
+				// Fire-and-forget broadcast across all registered channels
+				if a.broadcastManager != nil {
+					go a.broadcastManager.BroadcastVC(vcID)
+					runtime.EventsEmit(a.ctx, "log", map[string]string{
+						"msg":  "[BROADCAST] Broadcasting VC to registered channels...",
+						"type": "sys",
+					})
+				}
 			}
 		}
 	}
@@ -441,16 +524,27 @@ func (a *App) TriggerMint(selectedFiles []string, workspacePath string) string {
 	return result
 }
 
-// GetWorkspaceFiles returns uniquely modified files for a requested workspace
+// GetWorkspaceFiles returns uniquely modified files for a requested workspace.
+// If workspace points to a single file (e.g. dragged in before fix), it returns
+// that file directly instead of attempting a directory scan which would silently fail.
 func (a *App) GetWorkspaceFiles(workspace string) []string {
-	workspacePath := filepath.ToSlash(workspace)
-	if !strings.HasSuffix(workspacePath, "/") {
-		workspacePath += "/"
-	}
-
-	runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": fmt.Sprintf("[DEBUG-TRACE] Resolving workspace: %s", workspacePath), "type": "sys"})
+	runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": fmt.Sprintf("[DEBUG-TRACE] Resolving workspace: %s", workspace), "type": "sys"})
 
 	var finalFiles []string
+
+	// Check if the path is a regular file rather than a directory
+	info, err := os.Stat(workspace)
+	if err != nil {
+		runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": fmt.Sprintf("[DEBUG-TRACE] Workspace path not found: %s", workspace), "type": "err"})
+		return finalFiles
+	}
+
+	if !info.IsDir() {
+		// Workspace is a single file — return it directly (legacy drag-drop support)
+		runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": fmt.Sprintf("[DEBUG-TRACE] Workspace is a single file, returning directly: %s", workspace), "type": "sys"})
+		finalFiles = append(finalFiles, filepath.ToSlash(workspace))
+		return finalFiles
+	}
 
 	// Physically scan the actual disk so the UI shows ALL files, not just modified ones.
 	var scanDir func(string)
@@ -461,7 +555,7 @@ func (a *App) GetWorkspaceFiles(workspace string) []string {
 		}
 		for _, entry := range entries {
 			fullPath := filepath.Join(currentDir, entry.Name())
-			
+
 			// Use the new helper to skip hidden/system/manual patterns recursively
 			if isPathIgnored(fullPath, a.ignoredPatterns) {
 				continue
@@ -499,14 +593,13 @@ func (a *App) GetLedger() []LedgerEntry {
 	var entries []LedgerEntry
 	for rows.Next() {
 		var e LedgerEntry
-		var fullJsonStr string
-		if err := rows.Scan(&e.VcID, &e.Timestamp, &e.ProjectContext, &e.AiInsight, &e.FilePaths, &e.Status, &e.VcHash, &fullJsonStr); err != nil {
+		if err := rows.Scan(&e.VcID, &e.Timestamp, &e.ProjectContext, &e.AiInsight, &e.FilePaths, &e.Status, &e.VcHash, &e.FullVcJson); err != nil {
 			continue
 		}
 
 		// Parse AI engine from full VC JSON
 		var vc VCSchema
-		if err := json.Unmarshal([]byte(fullJsonStr), &vc); err == nil {
+		if err := json.Unmarshal([]byte(e.FullVcJson), &vc); err == nil {
 			e.AiEngine = vc.CredentialSubject.ProofOfWork.AIEngine
 		}
 
@@ -1124,3 +1217,105 @@ func (a *App) SyncHistoricLedger(targetDir string) string {
 	runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": msg, "type": "sys"})
 	return fmt.Sprintf(`{"status": "OK", "synced": %d}`, count)
 }
+
+// ── Broadcast Wails Bindings ──────────────────────────────────────────────────
+
+// BroadcastVC manually triggers broadcasting of an existing credential to all
+// registered channels. Useful for retrying failed broadcasts or broadcasting
+// credentials that were minted before broadcast was configured.
+func (a *App) BroadcastVC(vcID string) string {
+	if a.broadcastManager == nil || len(a.broadcastManager.broadcasters) == 0 {
+		return `{"error": "No broadcast channels configured. Please add a GitHub PAT in Settings."}`
+	}
+	go a.broadcastManager.BroadcastVC(vcID)
+	runtime.EventsEmit(a.ctx, "log", map[string]string{
+		"msg":  "[BROADCAST] Manual broadcast triggered for " + vcID[:min(20, len(vcID))] + "...",
+		"type": "sys",
+	})
+	return `{"status": "queued"}`
+}
+
+// GetBroadcastStatus returns the broadcast status for all channels for a given vc_id.
+// The frontend uses this to render per-channel status badges on each Ledger card.
+func (a *App) GetBroadcastStatus(vcID string) []BroadcastPublication {
+	pubs, err := a.db.GetBroadcastsByVC(vcID)
+	if err != nil {
+		return []BroadcastPublication{}
+	}
+	if pubs == nil {
+		return []BroadcastPublication{}
+	}
+	return pubs
+}
+
+// GetProfileIndex generates and returns the public root index JSON as a string.
+// The index aggregates all publicly broadcast credentials for this identity and
+// is intended to be published as a pinned Gist (verihash_profile_index.json).
+func (a *App) GetProfileIndex() string {
+	did := a.GetDID()
+	index, err := a.db.GenerateProfileIndex(did)
+	if err != nil {
+		return `{"error": "Failed to generate profile index: ` + strings.ReplaceAll(err.Error(), `"`, `'`) + `"}`
+	}
+	out, _ := json.MarshalIndent(index, "", "  ")
+	return string(out)
+}
+
+// ── .vhb Cold Backup Wails Bindings ──────────────────────────────────────────
+
+// ExportVHBBackup creates an encrypted .vhb cold backup of the ledger database
+// and public identity. The backup password is independent of the vault password.
+// Returns JSON: { "status": "OK", "path": "<abs-path>" } or { "error": "..." }
+func (a *App) ExportVHBBackup(backupPassword, confirmPassword string) string {
+	did := a.GetDID()
+	absPath, err := ExportVHB(a.db, did, backupPassword, confirmPassword)
+	if err != nil {
+		errMsg := strings.ReplaceAll(err.Error(), `"`, `'`)
+		return `{"error": "` + errMsg + `"}`
+	}
+	runtime.EventsEmit(a.ctx, "log", map[string]string{
+		"msg":  "[BACKUP] .vhb cold backup created: " + absPath,
+		"type": "sys",
+	})
+	out, _ := json.Marshal(map[string]string{"status": "OK", "path": absPath})
+	return string(out)
+}
+
+// ImportVHBBackup opens a file dialog for the user to select a .vhb file,
+// then decrypts and restores the ledger and identity.
+// NOTE: The private key is NOT restored — the user must re-enter their mnemonic
+// after import to rebuild their keypair (shown via the wallet flow on next launch).
+// Returns JSON: { "status": "OK", "did": "...", "credentials": N } or { "error": "..." }
+func (a *App) ImportVHBBackup(backupPassword string) string {
+	// Open file dialog
+	vhbPath, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Select VeriHash Backup (.vhb)",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "VeriHash Backup (*.vhb)", Pattern: "*.vhb"},
+			{DisplayName: "All Files (*.*)", Pattern: "*.*"},
+		},
+	})
+	if err != nil || vhbPath == "" {
+		return `{"error": "No file selected"}`
+	}
+
+	manifest, err := ImportVHB(vhbPath, backupPassword)
+	if err != nil {
+		errMsg := strings.ReplaceAll(err.Error(), `"`, `'`)
+		return `{"error": "` + errMsg + `"}`
+	}
+
+	runtime.EventsEmit(a.ctx, "log", map[string]string{
+		"msg":  fmt.Sprintf("[BACKUP] Ledger restored from .vhb: %d credential(s), DID: %s", manifest.CredentialCount, manifest.DID),
+		"type": "sys",
+	})
+
+	out, _ := json.Marshal(map[string]interface{}{
+		"status":      "OK",
+		"did":         manifest.DID,
+		"credentials": manifest.CredentialCount,
+		"exported_at": manifest.ExportedAt,
+	})
+	return string(out)
+}
+

@@ -1,4 +1,4 @@
-import { SelectDirectory, SaveConfig, StartWatchdog, TriggerMint, GetDID, LoadConfig, GetWorkspaceFiles, GetLedger, ExportCredentialJSON, ExportSanitizedJSON, RestoreDataFromSync, GenerateHTMLReport, RevokeCredential, VerifyChain, VerifyCredential, ExportIdentityBundle, ImportIdentityBundle, SaveToFile, GetWalletStatus, UnlockWallet, InitWallet, MigrateWallet, GetMnemonic, LockVault, ToggleAutoStart, IsAutoStartEnabled, ImportMnemonic, SyncHistoricLedger, UpdateIgnoredPatterns, SaveSessionIgnores } from '../wailsjs/go/main/App';
+import { SelectDirectory, SaveConfig, StartWatchdog, TriggerMint, GetDID, LoadConfig, GetWorkspaceFiles, GetLedger, ExportCredentialJSON, ExportSanitizedJSON, RestoreDataFromSync, GenerateHTMLReport, RevokeCredential, VerifyChain, VerifyCredential, ExportIdentityBundle, ImportIdentityBundle, SaveToFile, GetWalletStatus, UnlockWallet, InitWallet, MigrateWallet, GetMnemonic, LockVault, ToggleAutoStart, IsAutoStartEnabled, ImportMnemonic, SyncHistoricLedger, UpdateIgnoredPatterns, SaveSessionIgnores, ResolveDroppedPath, BroadcastVC, GetBroadcastStatus, GetProfileIndex, ExportVHBBackup, ImportVHBBackup } from '../wailsjs/go/main/App';
 import { EventsOn, WindowGetSize, WindowSetSize, OnFileDrop } from '../wailsjs/runtime/runtime';
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -181,7 +181,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     let ignoredPatterns = [];
     let sessionIgnores = {}; // Per-workspace persistent UI filter tree states
     let collapsedDirs = {};  // Per-workspace filter-tree UI toggle states
-    let activeWorkspace = null;
+    let activeWorkspaces = new Set(); // Multi-select: Set of selected workspace paths
+    let lastClickedWsIndex = -1;      // For Shift+click range selection
 
     // Boot Sequence
     try {
@@ -208,6 +209,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (cfg.base_url) {
             const baseUrlInput = document.getElementById('base-url');
             if (baseUrlInput) baseUrlInput.value = cfg.base_url;
+        }
+        // GitHub PAT: show masked hint if configured
+        const patInput = document.getElementById('input-github-pat');
+        const patStatus = document.getElementById('broadcast-gist-status');
+        if (cfg.github_pat && patInput) {
+            patInput.placeholder = '●●●●●●●●●●●● (PAT configured)';
+            if (patStatus) { patStatus.innerText = '✓ CONFIGURED'; patStatus.style.color = '#00ffcc'; }
         }
 
         renderWorkspaces();
@@ -286,7 +294,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         const model = modelNameInput ? modelNameInput.value : '';
         const baseUrlInput = document.getElementById('base-url');
         const baseUrl = baseUrlInput ? baseUrlInput.value : '';
-        await SaveConfig(workspaces, engine, model, key, baseUrl, cloudSyncDirs);
+        // Pass empty string for PAT — SaveConfig preserves the existing value when empty
+        await SaveConfig(workspaces, engine, model, key, baseUrl, cloudSyncDirs, '');
     }
 
     // AI Engine change handler --  supports all 5 providers
@@ -308,9 +317,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Show engine-specific hints
             const hints = {
                 gemini: { label: 'GEMINI LINKED', placeholder: 'e.g. gemini-2.5-flash' },
+                claude: { label: 'CLAUDE LINKED', placeholder: 'e.g. claude-3-5-sonnet-latest' },
                 deepseek: { label: 'DEEPSEEK LINKED', placeholder: 'e.g. deepseek-chat' },
+                kimi: { label: 'KIMI LINKED', placeholder: 'e.g. moonshot-v1-8k' },
+                siliconflow: { label: 'SILICONFLOW LINKED', placeholder: 'e.g. deepseek-ai/DeepSeek-V3' },
                 qwen: { label: 'QWEN LINKED', placeholder: 'e.g. qwen-turbo' },
                 minimax: { label: 'MINIMAX LINKED', placeholder: 'e.g. MiniMax-Text-01' },
+                mistral: { label: 'MISTRAL LINKED', placeholder: 'e.g. mistral-large-latest' },
                 openai: { label: 'OPENAI LINKED', placeholder: 'e.g. gpt-4o-mini' },
                 custom: { label: 'CUSTOM ENDPOINT', placeholder: 'your-model-name' },
             };
@@ -439,12 +452,53 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    // M/D Workspace Mechanics
+    // ======== GITHUB PAT SAVE ========
+    const btnSaveGitHubPAT = document.getElementById('btn-save-github-pat');
+    if (btnSaveGitHubPAT) {
+        btnSaveGitHubPAT.addEventListener('click', async () => {
+            const patInput = document.getElementById('input-github-pat');
+            const feedback = document.getElementById('github-pat-feedback');
+            const patStatus = document.getElementById('broadcast-gist-status');
+            const pat = patInput ? patInput.value.trim() : '';
+            if (!pat) {
+                if (feedback) { feedback.innerText = 'Enter a valid GitHub PAT.'; feedback.style.color = '#ff6666'; }
+                return;
+            }
+            btnSaveGitHubPAT.disabled = true;
+            btnSaveGitHubPAT.innerText = '[ SAVING... ]';
+            try {
+                const engine = aiEngineSelect.value;
+                const key = apiKeyInput ? apiKeyInput.value : '';
+                const model = modelNameInput ? modelNameInput.value : '';
+                const baseUrlInput = document.getElementById('base-url');
+                const baseUrl = baseUrlInput ? baseUrlInput.value : '';
+                await SaveConfig(workspaces, engine, model, key, baseUrl, cloudSyncDirs, pat);
+                if (feedback) { feedback.innerText = '✓ PAT saved. GitHub Gist channel is now active.'; feedback.style.color = '#00ffcc'; }
+                if (patStatus) { patStatus.innerText = '✓ CONFIGURED'; patStatus.style.color = '#00ffcc'; }
+                patInput.value = '';
+                patInput.placeholder = '●●●●●●●●●●●● (PAT configured)';
+            } catch (e) {
+                if (feedback) { feedback.innerText = '✗ Error: ' + e; feedback.style.color = '#ff6666'; }
+            } finally {
+                btnSaveGitHubPAT.disabled = false;
+                btnSaveGitHubPAT.innerText = '[ SAVE ]';
+            }
+        });
+    }
+
+    // M/D Workspace Mechanics — Ctrl+click, Shift+click, single-click (Windows style)
     function renderWorkspaces() {
         workspaceStack.innerHTML = '';
-        workspaces.forEach(ws => {
+        workspaces.forEach((ws, idx) => {
             const card = document.createElement('div');
-            card.className = `workspace-card ${ws === activeWorkspace ? 'active' : ''}`;
+            // Primary active = solid border; secondary multi-active = dashed border
+            const isFirst = activeWorkspaces.size > 0 && ws === [...activeWorkspaces][0];
+            const isInSet = activeWorkspaces.has(ws);
+            let cardClass = 'workspace-card';
+            if (isInSet) {
+                cardClass += isFirst ? ' active' : ' multi-active';
+            }
+            card.className = cardClass;
             const baseName = ws.split(/[\/\\]/).pop();
             card.innerHTML = `
                 <div class="path-text">.../${baseName}</div>
@@ -454,13 +508,41 @@ document.addEventListener('DOMContentLoaded', async () => {
             card.addEventListener('click', (e) => {
                 if (e.target.classList.contains('btn-remove')) {
                     workspaces = workspaces.filter(w => w !== ws);
-                    if (activeWorkspace === ws) activeWorkspace = null;
+                    activeWorkspaces.delete(ws);
+                    if (lastClickedWsIndex >= workspaces.length) lastClickedWsIndex = workspaces.length - 1;
                     syncConfig();
                     renderWorkspaces();
                     updateView();
                     return;
                 }
-                activeWorkspace = activeWorkspace === ws ? null : ws;
+
+                if (e.ctrlKey || e.metaKey) {
+                    // Ctrl+click: toggle this workspace in the set
+                    if (activeWorkspaces.has(ws)) {
+                        activeWorkspaces.delete(ws);
+                    } else {
+                        activeWorkspaces.add(ws);
+                    }
+                    lastClickedWsIndex = idx;
+                } else if (e.shiftKey && lastClickedWsIndex !== -1) {
+                    // Shift+click: range select from lastClickedWsIndex to idx
+                    const lo = Math.min(lastClickedWsIndex, idx);
+                    const hi = Math.max(lastClickedWsIndex, idx);
+                    // Keep the anchor, add the range
+                    for (let i = lo; i <= hi; i++) {
+                        activeWorkspaces.add(workspaces[i]);
+                    }
+                } else {
+                    // Plain click: select only this one
+                    if (activeWorkspaces.size === 1 && activeWorkspaces.has(ws)) {
+                        // Click on the sole active card → deselect
+                        activeWorkspaces.clear();
+                    } else {
+                        activeWorkspaces.clear();
+                        activeWorkspaces.add(ws);
+                    }
+                    lastClickedWsIndex = idx;
+                }
                 renderWorkspaces();
                 updateView();
             });
@@ -469,15 +551,103 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     async function updateView() {
-        if (!activeWorkspace) {
+        if (activeWorkspaces.size === 0) {
             telemetryPanel.style.display = 'block';
             workspaceView.style.display = 'none';
         } else {
             telemetryPanel.style.display = 'none';
             workspaceView.style.display = 'block';
-            activeWorkspaceName.innerText = activeWorkspace.split(/[\/\\]/).pop();
-            await renderFileTree(activeWorkspace);
+            const wsArray = [...activeWorkspaces];
+            if (wsArray.length === 1) {
+                activeWorkspaceName.innerText = wsArray[0].split(/[\/\\]/).pop();
+            } else {
+                const names = wsArray.map(p => p.split(/[\/\\]/).pop());
+                activeWorkspaceName.innerText = `[CROSS-PROJECT] × ${wsArray.length}: ${names.join(' + ')}`;
+            }
+            await renderFileTreeMulti(wsArray);
         }
+    }
+
+
+    // Multi-workspace file tree: loads each workspace in parallel and renders grouped sections
+    async function renderFileTreeMulti(wsArray) {
+        fileTreeContainer.innerHTML = '<div style="color:#888;">Fetching files from ' + wsArray.length + ' workspace(s)...</div>';
+        try {
+            // Parallel fetch all workspaces
+            const allResults = await Promise.all(wsArray.map(ws => GetWorkspaceFiles(ws)));
+
+            fileTreeContainer.innerHTML = '';
+
+            let totalFiles = 0;
+            for (let wi = 0; wi < wsArray.length; wi++) {
+                const ws = wsArray[wi];
+                const files = allResults[wi] || [];
+
+                // --- Group header (always shown when multi-ws, or when single for consistency) ---
+                if (wsArray.length > 1) {
+                    const groupHeader = document.createElement('div');
+                    groupHeader.className = 'workspace-group-header';
+                    const baseName = ws.split(/[\/\\]/).pop();
+                    groupHeader.innerHTML = `<i class="group-icon">📁</i> ${baseName.toUpperCase()}`;
+                    fileTreeContainer.appendChild(groupHeader);
+                }
+
+                if (!files || files.length === 0) {
+                    const emptyMsg = document.createElement('div');
+                    emptyMsg.style.cssText = 'color:#666; font-size:0.75rem; padding: 4px 10px 8px; font-style:italic;';
+                    emptyMsg.innerText = 'No files found in this workspace.';
+                    fileTreeContainer.appendChild(emptyMsg);
+                    continue;
+                }
+
+                // --- Render file items for this workspace ---
+                // Reuse the single-workspace rendering logic, scoped to each ws
+                renderWorkspaceFileItems(ws, files);
+                totalFiles += files.length;
+            }
+
+            if (totalFiles === 0) {
+                fileTreeContainer.innerHTML = '<div style="color:#888; font-size:0.8rem;">No files found in selected workspaces.</div>';
+            }
+        } catch (e) {
+            fileTreeContainer.innerHTML = `<div class="err">Error loading tree: ${e}</div>`;
+        }
+    }
+
+    // Renders file checkboxes for a single workspace into fileTreeContainer (appended, not replaced)
+    function renderWorkspaceFileItems(ws, files) {
+        const normalizedWs = ws.replace(/\\/g, '/');
+        const localIgnores = sessionIgnores[ws] || [];
+
+        files.forEach(file => {
+            let relPath = file;
+            if (file.toLowerCase().startsWith(normalizedWs.toLowerCase())) {
+                relPath = file.substring(normalizedWs.length);
+            }
+            relPath = relPath.replace(/^[\/\\]/, '');
+            if (!relPath) relPath = file.replace(/\\/g, '/').split('/').pop();
+
+            // Apply session ignores (per workspace)
+            const parts = relPath.split('/');
+            let currentDir = '';
+            let shouldIgnore = false;
+            for (let i = 0; i < parts.length - 1; i++) {
+                currentDir = currentDir ? (currentDir + '/' + parts[i]) : parts[i];
+                if (localIgnores.includes('DIR:' + currentDir)) shouldIgnore = true;
+                else if (localIgnores.includes('EXCEPT:' + currentDir)) shouldIgnore = false;
+            }
+            if (localIgnores.includes(file)) shouldIgnore = true;
+            else if (localIgnores.includes('EXCEPT:' + relPath)) shouldIgnore = false;
+            if (shouldIgnore) return;
+
+            const item = document.createElement('label');
+            item.className = 'file-tree-item';
+            item.innerHTML = `
+                <input type="checkbox" class="file-checkbox" value="${file}">
+                <span class="file-path">${relPath}</span>
+            `;
+            fileTreeContainer.appendChild(item);
+        });
     }
 
     async function renderFileTree(ws) {
@@ -500,6 +670,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     relPath = file.substring(normalizedWs.length);
                 }
                 relPath = relPath.replace(/^[\/\\]/, '');
+                // Single-file workspace: ws === file, so relPath is empty → use basename
+                if (!relPath) relPath = file.replace(/\\/g, '/').split('/').pop();
                 
                 const parts = relPath.split('/');
                 let currentDir = "";
@@ -718,6 +890,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     relPath = file.substring(normalizedWs.length);
                 }
                 relPath = relPath.replace(/^[\/\\]/, '');
+                // Single-file workspace: ws === file, so relPath is empty → use basename
+                if (!relPath) relPath = file.replace(/\\/g, '/').split('/').pop();
 
                 // Skip files if ANY of their parent directories are currently ignored (evaluating deepest rule)
                 const parts = relPath.split('/');
@@ -759,7 +933,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Addition Handlers
     OnFileDrop(async (x, y, paths) => {
         if (paths && paths.length > 0) {
-            addWorkspace(paths[0]);
+            for (const droppedPath of paths) {
+                addWorkspace(droppedPath);
+            }
         }
     }, true);
 
@@ -778,11 +954,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    // Contextual Minting
+    // Contextual Minting — supports single and multi-workspace
     btnMint.addEventListener('click', async () => {
         if (btnMint.classList.contains('disabled')) return;
 
-        if (!activeWorkspace) {
+        if (activeWorkspaces.size === 0) {
             alert("Error: Please select a Workspace Card from the right panel to specify the Minting Context.");
             return;
         }
@@ -802,17 +978,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         body.classList.add('minting-mode');
         startMatrixRain();
 
+        // Capture current active workspaces then clear selection for UI reset
+        const mintingWsArray = [...activeWorkspaces];
+        const workspacePathParam = mintingWsArray.join('|');
+        const contextLabel = mintingWsArray.map(p => p.split(/[\/\\]/).pop()).join(' + ');
+
         try {
-            // We switch to global view to show the result if we want, or stay in context. 
-            // Better to show the hash result clearly.
-            const mintingWorkspace = activeWorkspace;
-            activeWorkspace = null;
+            activeWorkspaces.clear();
             renderWorkspaces();
             updateView();
-            appendLog(`\n[ORACLE] Forging Credential for workspace [${mintingWorkspace}] with ${selectedFiles.length} files...`, 'sys');
+            appendLog(`\n[ORACLE] Forging Cross-Project Credential [${contextLabel}] with ${selectedFiles.length} file(s)...`, 'sys');
 
-            const resultJSON = await TriggerMint(selectedFiles, mintingWorkspace);
-            // Parse result for clean display instead of dumping raw JSON
+            const resultJSON = await TriggerMint(selectedFiles, workspacePathParam);
             try {
                 const vc = JSON.parse(resultJSON);
                 if (vc.error) {
@@ -822,11 +999,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     appendLog(`[VC_ID]  ${vc.id}`, 'sys');
                     appendLog(`[ISSUER] ${vc.issuer?.substring(0, 60)}...`, 'sys');
                     appendLog(`[DATE]   ${vc.issuanceDate}`, 'sys');
-                    appendLog(`[FILES]  ${vc.credentialSubject?.proofOfWork?.filePaths?.length || 0} files anchored`, 'sys');
+                    appendLog(`[FILES]  ${vc.credentialSubject?.proofOfWork?.files?.length || 0} files anchored`, 'sys');
                     appendLog('\n\u2192 View full credential in [ THE_LEDGER ] tab', 'sys');
                 }
             } catch {
-                // Fallback: show raw if parse fails
                 appendLog('\n\u2605\u2605\u2605 SESSION CREDENTIAL MINTED \u2605\u2605\u2605', 'sys');
                 appendLog(resultJSON.substring(0, 300) + '...', 'sys');
             }
@@ -840,6 +1016,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             statusDot.classList.remove('pulsing');
         }
     });
+
 
     // Matrix
     let rainInterval;
@@ -1165,12 +1342,35 @@ document.addEventListener('DOMContentLoaded', async () => {
                         <div class="ledger-project">${projectName}</div>
                         <div class="ledger-insight-preview">${insightPreview}</div>
                         ${entry.vc_hash ? `<div class="ledger-vc-hash">\u00bb  ${entry.vc_hash.substring(0, 32)}...</div>` : ''}
+                        <div class="ledger-broadcast-badges" id="badges-${entry.vc_id.replace(/[^a-z0-9]/gi,'_')}" style="margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap;"></div>
                     </div>
                     <div class="ledger-badge">${fileCount} files</div>
                 `;
 
                 row.addEventListener('click', () => openDrawer(entry));
                 ledgerContainer.appendChild(row);
+
+                // Async-load broadcast status badges (fire-and-forget)
+                const badgeContainerId = 'badges-' + entry.vc_id.replace(/[^a-z0-9]/gi, '_');
+                GetBroadcastStatus(entry.vc_id).then(pubs => {
+                    const container = document.getElementById(badgeContainerId);
+                    if (!container || !pubs || pubs.length === 0) return;
+                    pubs.forEach(pub => {
+                        const badge = document.createElement('span');
+                        const icons = { pending: '⏳', publishing: '📡', success: '✅', failed: '❌', revoked: '🚫' };
+                        const icon = icons[pub.status] || '?';
+                        const label = pub.channel.toUpperCase();
+                        badge.style.cssText = 'font-size: 0.58rem; padding: 1px 5px; border-radius: 3px; background: rgba(0,0,0,0.4); border: 1px solid rgba(0,255,204,0.2); color: #aaa; cursor: default; white-space: nowrap;';
+                        badge.title = `${label}: ${pub.status}${pub.last_error ? ' — ' + pub.last_error : ''}${pub.remote_url ? '\n' + pub.remote_url : ''}`;
+                        badge.innerText = `${icon} ${label}`;
+                        if (pub.status === 'success' && pub.remote_url) {
+                            badge.style.cursor = 'pointer';
+                            badge.style.color = '#00ffcc88';
+                            badge.addEventListener('click', (e) => { e.stopPropagation(); window.open(pub.remote_url, '_blank'); });
+                        }
+                        container.appendChild(badge);
+                    });
+                }).catch(() => {});
             });
         } catch (e) {
             ledgerContainer.innerHTML = `<div style="color:#ff6666; font-size:0.8rem;">Error loading ledger: ${e}</div>`;
@@ -1196,10 +1396,31 @@ document.addEventListener('DOMContentLoaded', async () => {
             drawerAiEngine.innerText = entry.ai_engine ? '[ ' + entry.ai_engine + ' ]' : '';
         }
 
-        const paths = entry.file_paths
-            ? entry.file_paths.split(',').map(f => f.trim()).filter(Boolean)
-            : [];
-        drawerFilePaths.innerHTML = paths.map(p => `<div>${p.split(/[\/\\]/).pop()}</div>`).join('');
+        // Prefer reading from the signed VC JSON which carries FileDate (physical OS ModTime watermark).
+        // Falls back to the legacy file_paths string for credentials minted before this feature.
+        let manifestHTML = '';
+        if (entry.full_vc_json) {
+            try {
+                const vc = JSON.parse(entry.full_vc_json);
+                const files = vc?.credentialSubject?.proofOfWork?.files;
+                if (Array.isArray(files) && files.length > 0) {
+                    manifestHTML = files.map(f => {
+                        const datePart = f.fileDate
+                            ? `<span style="color:#888; margin-left:8px; font-size:0.7rem;">(Modified: ${f.fileDate})</span>`
+                            : '';
+                        return `<div>${f.name}${datePart}</div>`;
+                    }).join('');
+                }
+            } catch (_) { /* fall through to legacy path */ }
+        }
+        if (!manifestHTML) {
+            // Legacy fallback: file_paths is a comma-separated string of full paths
+            const paths = entry.file_paths
+                ? entry.file_paths.split(',').map(f => f.trim()).filter(Boolean)
+                : [];
+            manifestHTML = paths.map(p => `<div>${p.split(/[\/\\]/).pop()}</div>`).join('');
+        }
+        drawerFilePaths.innerHTML = manifestHTML;
 
         credentialDrawer.style.display = 'flex';
     }
@@ -1522,6 +1743,112 @@ document.addEventListener('DOMContentLoaded', async () => {
             } finally {
                 btnRestoreMnemonic.innerHTML = '\u26A0 \u00a0RESTORE NODE IDENTITY';
                 btnRestoreMnemonic.disabled = false;
+            }
+        });
+    }
+
+    // ======== .vhb COLD BACKUP — EXPORT ========
+    const btnVHBExport = document.getElementById('btn-vhb-export');
+    if (btnVHBExport) {
+        btnVHBExport.addEventListener('click', async () => {
+            const pwd = document.getElementById('vhb-export-pwd').value;
+            const confirm = document.getElementById('vhb-export-pwd-confirm').value;
+            const statusEl = document.getElementById('vhb-export-status');
+            statusEl.className = 'modal-status';
+            statusEl.innerText = '';
+
+            if (!pwd) {
+                statusEl.className = 'modal-status err';
+                statusEl.innerText = '\u2715 Please enter a backup password.';
+                return;
+            }
+            if (pwd.length < 6) {
+                statusEl.className = 'modal-status err';
+                statusEl.innerText = '\u2715 Backup password must be at least 6 characters.';
+                return;
+            }
+            if (pwd !== confirm) {
+                statusEl.className = 'modal-status err';
+                statusEl.innerText = '\u2715 Passwords do not match.';
+                return;
+            }
+
+            btnVHBExport.innerText = '[ ENCRYPTING... ]';
+            btnVHBExport.disabled = true;
+            statusEl.innerText = '\u23f3 Building encrypted archive (Argon2id KDF — this may take ~3s)...';
+
+            try {
+                const resultJSON = await ExportVHBBackup(pwd, confirm);
+                const result = JSON.parse(resultJSON);
+                if (result.error) {
+                    statusEl.className = 'modal-status err';
+                    statusEl.innerText = '\u2715 ' + result.error;
+                } else {
+                    statusEl.className = 'modal-status ok';
+                    statusEl.innerHTML = `\u2713 Cold backup created!<br><span style="color:#aaa; font-size:0.68rem; word-break:break-all;">${result.path}</span>`;
+                    document.getElementById('vhb-export-pwd').value = '';
+                    document.getElementById('vhb-export-pwd-confirm').value = '';
+                }
+            } catch (e) {
+                statusEl.className = 'modal-status err';
+                statusEl.innerText = '\u2715 ' + e;
+            } finally {
+                btnVHBExport.innerText = '\u2744 \u00a0CREATE COLD BACKUP';
+                btnVHBExport.disabled = false;
+            }
+        });
+    }
+
+    // ======== .vhb COLD BACKUP — IMPORT ========
+    const btnVHBImport = document.getElementById('btn-vhb-import');
+    if (btnVHBImport) {
+        btnVHBImport.addEventListener('click', async () => {
+            const pwd = document.getElementById('vhb-import-pwd').value;
+            const statusEl = document.getElementById('vhb-import-status');
+            statusEl.className = 'modal-status';
+            statusEl.innerText = '';
+
+            if (!pwd) {
+                statusEl.className = 'modal-status err';
+                statusEl.innerText = '\u2715 Please enter the backup password.';
+                return;
+            }
+
+            const confirmed = confirm(
+                '\u26A0 WARNING: This will REPLACE your current credential ledger with the backup.\n' +
+                'A .bak copy of your current database will be created.\n\n' +
+                'Your private key will NOT be restored — you will need to re-enter your\n' +
+                '12-word recovery phrase after the app restarts.\n\n' +
+                'Continue?'
+            );
+            if (!confirmed) return;
+
+            btnVHBImport.innerText = '[ DECRYPTING... ]';
+            btnVHBImport.disabled = true;
+            statusEl.innerText = '\u23f3 Decrypting and restoring backup...';
+
+            try {
+                const resultJSON = await ImportVHBBackup(pwd);
+                const result = JSON.parse(resultJSON);
+                if (result.error) {
+                    statusEl.className = 'modal-status err';
+                    statusEl.innerText = '\u2715 ' + result.error;
+                } else {
+                    statusEl.className = 'modal-status ok';
+                    statusEl.innerHTML =
+                        `\u2713 Ledger restored! ${result.credentials} credential(s) recovered.<br>` +
+                        `<span style="color:#aaa; font-size:0.68rem;">DID: ${result.did}</span><br>` +
+                        `<span style="color:#ffaa00; font-size:0.68rem;">\u26A0 Restart VeriHash and enter your recovery phrase to rebuild your identity key.</span>`;
+                    document.getElementById('vhb-import-pwd').value = '';
+                    // Auto-reload after 4s so the user can read the message
+                    setTimeout(() => location.reload(), 4000);
+                }
+            } catch (e) {
+                statusEl.className = 'modal-status err';
+                statusEl.innerText = '\u2715 ' + e;
+            } finally {
+                btnVHBImport.innerText = '\u267b \u00a0SELECT .vhb \u0026 RESTORE';
+                btnVHBImport.disabled = false;
             }
         });
     }

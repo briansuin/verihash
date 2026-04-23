@@ -40,6 +40,23 @@ func initDB() error {
 			full_vc_json TEXT NOT NULL,
 			status INTEGER DEFAULT 1
 		);`,
+		// broadcast_publications: one row per (vc_id, channel) — multi-channel broadcast state machine.
+		// UNIQUE(vc_id, channel) ensures idempotency; adding Nostr later only requires a new row.
+		`CREATE TABLE IF NOT EXISTS broadcast_publications (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			vc_id           TEXT NOT NULL,
+			channel         TEXT NOT NULL,
+			status          TEXT NOT NULL DEFAULT 'pending',
+			remote_id       TEXT NOT NULL DEFAULT '',
+			remote_url      TEXT NOT NULL DEFAULT '',
+			attempt_count   INTEGER NOT NULL DEFAULT 0,
+			last_error      TEXT NOT NULL DEFAULT '',
+			last_attempt_at REAL NOT NULL DEFAULT 0,
+			next_retry_at   REAL NOT NULL DEFAULT 0,
+			created_at      REAL NOT NULL,
+			updated_at      REAL NOT NULL,
+			UNIQUE(vc_id, channel)
+		);`,
 		`PRAGMA journal_mode=WAL;`,
 		`PRAGMA busy_timeout = 5000;`,
 	}
@@ -57,6 +74,22 @@ func initDB() error {
 	db.Exec(`ALTER TABLE session_credentials ADD COLUMN revoked_at INTEGER DEFAULT 0;`)
 	db.Exec(`ALTER TABLE session_credentials ADD COLUMN revoke_signature TEXT DEFAULT '';`)
 	return nil
+}
+
+// BroadcastPublication mirrors one row in broadcast_publications.
+type BroadcastPublication struct {
+	ID            int64   `json:"id"`
+	VcID          string  `json:"vc_id"`
+	Channel       string  `json:"channel"`
+	Status        string  `json:"status"`        // pending | publishing | success | failed | revoked
+	RemoteID      string  `json:"remote_id"`
+	RemoteURL     string  `json:"remote_url"`
+	AttemptCount  int     `json:"attempt_count"`
+	LastError     string  `json:"last_error"`
+	LastAttemptAt float64 `json:"last_attempt_at"`
+	NextRetryAt   float64 `json:"next_retry_at"`
+	CreatedAt     float64 `json:"created_at"`
+	UpdatedAt     float64 `json:"updated_at"`
 }
 
 // VeriHashDB wrapper
@@ -247,4 +280,96 @@ func (db *VeriHashDB) GetSnapshotsByPaths(paths []string) ([]Snapshot, error) {
 		snaps = append(snaps, s)
 	}
 	return snaps, nil
+}
+
+// ── Broadcast Publication Methods ─────────────────────────────────────────────
+
+// UpsertBroadcastJob creates or resets a broadcast record for (vcID, channel).
+// If the record already exists and is in a terminal state (success/revoked), it
+// is left unchanged to preserve idempotency. Failed/pending records are re-queued.
+func (db *VeriHashDB) UpsertBroadcastJob(vcID, channel string) error {
+	now := float64(time.Now().UnixNano()) / 1e9
+	_, err := db.conn.Exec(`
+		INSERT INTO broadcast_publications
+			(vc_id, channel, status, created_at, updated_at)
+		VALUES (?, ?, 'pending', ?, ?)
+		ON CONFLICT(vc_id, channel) DO UPDATE SET
+			status     = CASE WHEN status IN ('success','revoked') THEN status ELSE 'pending' END,
+			updated_at = excluded.updated_at
+	`, vcID, channel, now, now)
+	return err
+}
+
+// UpdateBroadcastStatus writes the result of a broadcast attempt to the DB.
+func (db *VeriHashDB) UpdateBroadcastStatus(vcID, channel, status, remoteID, remoteURL, lastError string) error {
+	now := float64(time.Now().UnixNano()) / 1e9
+	_, err := db.conn.Exec(`
+		UPDATE broadcast_publications
+		SET status          = ?,
+		    remote_id       = ?,
+		    remote_url      = ?,
+		    last_error      = ?,
+		    last_attempt_at = ?,
+		    attempt_count   = attempt_count + 1,
+		    updated_at      = ?
+		WHERE vc_id = ? AND channel = ?
+	`, status, remoteID, remoteURL, lastError, now, now, vcID, channel)
+	return err
+}
+
+// GetBroadcastsByVC returns all broadcast records for a given vc_id, newest channel first.
+func (db *VeriHashDB) GetBroadcastsByVC(vcID string) ([]BroadcastPublication, error) {
+	rows, err := db.conn.Query(`
+		SELECT id, vc_id, channel, status, remote_id, remote_url,
+		       attempt_count, last_error, last_attempt_at, next_retry_at, created_at, updated_at
+		FROM broadcast_publications
+		WHERE vc_id = ?
+		ORDER BY channel ASC
+	`, vcID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var pubs []BroadcastPublication
+	for rows.Next() {
+		var p BroadcastPublication
+		if err := rows.Scan(
+			&p.ID, &p.VcID, &p.Channel, &p.Status, &p.RemoteID, &p.RemoteURL,
+			&p.AttemptCount, &p.LastError, &p.LastAttemptAt, &p.NextRetryAt, &p.CreatedAt, &p.UpdatedAt,
+		); err != nil {
+			continue
+		}
+		pubs = append(pubs, p)
+	}
+	return pubs, nil
+}
+
+// GetPendingBroadcasts returns all records for a channel that need to be (re-)broadcast.
+// Used on startup to recover tasks that were interrupted before completion.
+func (db *VeriHashDB) GetPendingBroadcasts(channel string) ([]BroadcastPublication, error) {
+	rows, err := db.conn.Query(`
+		SELECT id, vc_id, channel, status, remote_id, remote_url,
+		       attempt_count, last_error, last_attempt_at, next_retry_at, created_at, updated_at
+		FROM broadcast_publications
+		WHERE channel = ? AND status IN ('pending', 'failed')
+		ORDER BY created_at ASC
+	`, channel)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var pubs []BroadcastPublication
+	for rows.Next() {
+		var p BroadcastPublication
+		if err := rows.Scan(
+			&p.ID, &p.VcID, &p.Channel, &p.Status, &p.RemoteID, &p.RemoteURL,
+			&p.AttemptCount, &p.LastError, &p.LastAttemptAt, &p.NextRetryAt, &p.CreatedAt, &p.UpdatedAt,
+		); err != nil {
+			continue
+		}
+		pubs = append(pubs, p)
+	}
+	return pubs, nil
 }

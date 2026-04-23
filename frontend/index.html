@@ -284,23 +284,31 @@
                                     <span class="cyber-select-arrow">▾</span>
                                 </div>
                                 <div class="cyber-select-dropdown" id="cyber-select-dropdown">
-                                    <div class="cyber-select-option active" data-value="ollama">LOCAL::Ollama</div>
-                                    <div class="cyber-select-option" data-value="gemini">CLOUD::Gemini</div>
+                                    <div class="cyber-select-option active" data-value="gemini">CLOUD::Gemini</div>
+                                    <div class="cyber-select-option" data-value="openai">CLOUD::OpenAI</div>
+                                    <div class="cyber-select-option" data-value="claude">CLOUD::Claude</div>
                                     <div class="cyber-select-option" data-value="deepseek">CLOUD::DeepSeek</div>
+                                    <div class="cyber-select-option" data-value="kimi">CLOUD::Kimi</div>
+                                    <div class="cyber-select-option" data-value="siliconflow">CLOUD::SiliconFlow</div>
                                     <div class="cyber-select-option" data-value="qwen">CLOUD::Qwen</div>
                                     <div class="cyber-select-option" data-value="minimax">CLOUD::MiniMax</div>
-                                    <div class="cyber-select-option" data-value="openai">CLOUD::OpenAI</div>
+                                    <div class="cyber-select-option" data-value="mistral">CLOUD::Mistral</div>
+                                    <div class="cyber-select-option" data-value="ollama">LOCAL::Ollama</div>
                                     <div class="cyber-select-option" data-value="custom">CUSTOM::Endpoint</div>
                                 </div>
                             </div>
                             <!-- Hidden native select for form value compatibility -->
                             <select id="ai-engine" style="display:none;">
-                                <option value="ollama">LOCAL::Ollama</option>
                                 <option value="gemini">CLOUD::Gemini</option>
+                                <option value="openai">CLOUD::OpenAI</option>
+                                <option value="claude">CLOUD::Claude</option>
                                 <option value="deepseek">CLOUD::DeepSeek</option>
+                                <option value="kimi">CLOUD::Kimi</option>
+                                <option value="siliconflow">CLOUD::SiliconFlow</option>
                                 <option value="qwen">CLOUD::Qwen</option>
                                 <option value="minimax">CLOUD::MiniMax</option>
-                                <option value="openai">CLOUD::OpenAI</option>
+                                <option value="mistral">CLOUD::Mistral</option>
+                                <option value="ollama">LOCAL::Ollama</option>
                                 <option value="custom">CUSTOM::Endpoint</option>
                             </select>
 
@@ -394,6 +402,22 @@
                 <div class="modal-section" style="margin-top: 15px;">
                     <div class="modal-section-title"
                         style="display: flex; justify-content: space-between; align-items: center;">
+                        <span>📡 BROADCAST CHANNEL :: GITHUB GIST</span>
+                        <span id="broadcast-gist-status" style="font-size: 0.6rem; color: #888;">NOT CONFIGURED</span>
+                    </div>
+                    <div class="modal-section-desc">GitHub Personal Access Token (PAT) with <strong>gist</strong> scope. Once configured, minted credentials are automatically broadcast to a public Gist as a sanitized public payload. <strong style="color: #00ffcc;">Full paths and raw diffs never leave your machine.</strong></div>
+                    <div class="exclusion-input-group" style="margin-top: 10px; display: flex; gap: 8px;">
+                        <input type="password" id="input-github-pat"
+                            placeholder="ghp_xxxxxxxxxxxx..."
+                            style="flex: 1; padding: 6px 10px; font-size: 0.8rem; background: rgba(0,0,0,0.3); border: 1px solid rgba(0,255,204,0.3); color: var(--primary); outline: none; font-family: var(--font-mono);">
+                        <button class="cyber-btn sm" id="btn-save-github-pat" style="font-size: 0.65rem; padding: 0 10px;">[ SAVE ]</button>
+                    </div>
+                    <div id="github-pat-feedback" style="margin-top: 6px; font-size: 0.68rem; color: #888;"></div>
+                </div>
+
+                <div class="modal-section" style="margin-top: 15px;">
+                    <div class="modal-section-title"
+                        style="display: flex; justify-content: space-between; align-items: center;">
                         <span>☁ MULTI-CLOUD SYNC DIRECTORIES</span>
                         <button class="cyber-btn sm" id="btn-add-sync-dir"
                             style="font-size: 0.6rem; padding: 2px 6px;">[ + MAPPING ]</button>
@@ -405,6 +429,38 @@
                         <!-- Sync dirs rendered here by JS -->
                         <div style="color: #666; font-size: 0.75rem; font-style: italic;">No cloud mirrors bound.</div>
                     </div>
+                </div>
+
+                <div class="modal-divider">── COLD BACKUP (.vhb) ──</div>
+
+                <!-- .vhb Export -->
+                <div class="modal-section">
+                    <div class="modal-section-title">❄ EXPORT LEDGER BACKUP (.vhb)</div>
+                    <div class="modal-section-desc">Creates an <strong>AES-256-GCM encrypted</strong> backup of your credential ledger and public identity. The backup password is <strong>independent of your vault password</strong>. Your private key is <strong>never included</strong> — use your recovery phrase to restore it on a new machine.</div>
+                    <div class="pwd-field-group" style="margin-top: 10px;">
+                        <label class="pwd-label">BACKUP PASSWORD</label>
+                        <input type="password" class="pwd-input" id="vhb-export-pwd" placeholder="Set a strong backup password..." autocomplete="new-password">
+                    </div>
+                    <div class="pwd-field-group">
+                        <label class="pwd-label">CONFIRM BACKUP PASSWORD</label>
+                        <input type="password" class="pwd-input" id="vhb-export-pwd-confirm" placeholder="Confirm backup password..." autocomplete="new-password">
+                    </div>
+                    <button class="modal-btn" id="btn-vhb-export">❄ &nbsp;CREATE COLD BACKUP</button>
+                    <div class="modal-status" id="vhb-export-status"></div>
+                </div>
+
+                <div class="modal-divider">── OR ──</div>
+
+                <!-- .vhb Import -->
+                <div class="modal-section">
+                    <div class="modal-section-title">♻ RESTORE FROM BACKUP (.vhb)</div>
+                    <div class="modal-section-desc">Restore your credential ledger from a <strong>.vhb cold backup</strong>. Enter the backup password used during export. <strong style="color: #ff9900;">⚠ Your current ledger will be replaced. A .bak file will be created.</strong><br>After restore, restart VeriHash and enter your 12-word recovery phrase to rebuild your identity key.</div>
+                    <div class="pwd-field-group" style="margin-top: 10px;">
+                        <label class="pwd-label">BACKUP PASSWORD</label>
+                        <input type="password" class="pwd-input" id="vhb-import-pwd" placeholder="Enter the backup password..." autocomplete="current-password">
+                    </div>
+                    <button class="modal-btn danger" id="btn-vhb-import">♻ &nbsp;SELECT .vhb &amp; RESTORE</button>
+                    <div class="modal-status" id="vhb-import-status"></div>
                 </div>
 
                 <div class="modal-divider">── IDENTITY SECRETS ──</div>
