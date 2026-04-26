@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -28,7 +27,14 @@ type Config struct {
 	CloudSyncDirs   []string            `json:"cloud_sync_dirs"`
 	IgnoredPatterns []string            `json:"ignored_patterns"`
 	SessionIgnores  map[string][]string `json:"session_ignores"`
-	GitHubPAT       string              `json:"github_pat"`       // GitHub Personal Access Token (gist scope)
+	GitHubPAT       string              `json:"github_pat"`        // GitHub Personal Access Token (gist scope)
+	IndexGistID     string              `json:"index_gist_id"`     // Phase 4.5: pinned root index Gist ID (stable anchor)
+	IndexGistURL    string              `json:"index_gist_url"`    // Phase 4.5: public URL of the root index Gist
+	DisplayName     string              `json:"display_name"`      // Human-readable name shown in the public index
+	// Public Profile — all opt-in, published to Index Gist if set
+	ProfileName    string            `json:"profile_name"`
+	ProfileWebsite string            `json:"profile_website"`
+	ProfileCustom  map[string]string `json:"profile_custom"`
 }
 
 // LedgerEntry is a summary row of a past minting session
@@ -60,6 +66,7 @@ type App struct {
 	cloudSyncDirs    []string
 	ignoredPatterns  []string
 	broadcastManager *BroadcastManager
+	indexUpdater     *IndexUpdater // Phase 4.5: auto-syncs the public root index Gist
 }
 
 // NewApp creates a new App application struct
@@ -127,17 +134,23 @@ func (a *App) startup(ctx context.Context) {
 	// 4. Initialize BroadcastManager with registered channels
 	a.broadcastManager = NewBroadcastManager(a.db)
 	if cfg.GitHubPAT != "" {
-		a.broadcastManager.RegisterBroadcaster(NewGitHubGistBroadcaster(cfg.GitHubPAT))
+		gistBroadcaster := NewGitHubGistBroadcaster(cfg.GitHubPAT)
+		a.broadcastManager.RegisterBroadcaster(gistBroadcaster)
 		runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[BROADCAST] GitHub Gist channel registered.", "type": "sys"})
+
+		// Phase 4.5: Start the IndexUpdater background worker.
+		// It listens for signals from Mint and Revoke and serially syncs the
+		// public root index Gist, debouncing burst updates automatically.
+		iu := NewIndexUpdater(a.db, gistBroadcaster, "verihash_config.json")
+		a.indexUpdater = iu
+		a.broadcastManager.indexUpdater = iu
+		iu.Start()
+		runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[INDEX] Public root index auto-updater started.", "type": "sys"})
 	}
 
-	// 5. Silently repair the historic JSON chain on all bound cloud directories in background
+	// 5. Sync DB snapshot to all bound cloud directories on startup
 	if len(a.cloudSyncDirs) > 0 {
-		go func() {
-			for _, dir := range a.cloudSyncDirs {
-				a.SyncHistoricLedger(dir)
-			}
-		}()
+		go a.syncDBToCloud()
 	}
 }
 
@@ -388,13 +401,32 @@ func (a *App) SaveConfig(workspaces []string, engine, modelName, key, baseURL st
 		AutoStart:       existingCfg.AutoStart,       // preserve
 		SessionIgnores:  existingCfg.SessionIgnores,  // preserve local filters
 		GitHubPAT:       pat,
+		// Phase 4.5: MUST preserve — losing these would cause IndexUpdater to
+		// re-bootstrap and create a duplicate Index Gist, breaking the stable URL.
+		IndexGistID:  existingCfg.IndexGistID,
+		IndexGistURL: existingCfg.IndexGistURL,
+		DisplayName:  existingCfg.DisplayName,
+		// Public Profile — preserve user-set fields
+		ProfileName:    existingCfg.ProfileName,
+		ProfileWebsite: existingCfg.ProfileWebsite,
+		ProfileCustom:  existingCfg.ProfileCustom,
 	}
 	bytes, _ := json.MarshalIndent(cfg, "", "  ")
 	os.WriteFile("verihash_config.json", bytes, 0644)
 
-	// Re-register broadcaster with new PAT immediately
+	// Re-register broadcaster and IndexUpdater with new PAT immediately
 	if a.broadcastManager != nil && pat != "" {
-		a.broadcastManager.RegisterBroadcaster(NewGitHubGistBroadcaster(pat))
+		gistBroadcaster := NewGitHubGistBroadcaster(pat)
+		a.broadcastManager.RegisterBroadcaster(gistBroadcaster)
+		// Restart IndexUpdater with new broadcaster if it wasn't running before
+		if a.indexUpdater == nil {
+			iu := NewIndexUpdater(a.db, gistBroadcaster, "verihash_config.json")
+			a.indexUpdater = iu
+			a.broadcastManager.indexUpdater = iu
+			iu.Start()
+		} else {
+			a.indexUpdater.UpdateBroadcaster(gistBroadcaster)
+		}
 	}
 
 	return "OK"
@@ -469,7 +501,7 @@ func (a *App) SaveSessionIgnores(ws string, rules []string) string {
 // TriggerMint runs the Oracle evaluation for specifically checked files.
 // workspacePath may be a single path or multiple paths joined by "|" for cross-project minting.
 // When multiple paths are provided, ProjectContext is set to the combined basename label.
-func (a *App) TriggerMint(selectedFiles []string, workspacePath string) string {
+func (a *App) TriggerMint(selectedFiles []string, workspacePath string, projectName string) string {
 	if a.walletIsLocked() {
 		return `{"error": "Wallet is locked. Enter your wallet password to unlock."}`
 	}
@@ -481,24 +513,29 @@ func (a *App) TriggerMint(selectedFiles []string, workspacePath string) string {
 		engineParam = a.aiEngine + ":" + a.modelName
 	}
 
-	// Build a human-readable ProjectContext from all workspace basenames
-	// e.g. "ProjectA | ProjectB" when multiple workspaces are selected
-	mintContext := workspacePath
-	wsPaths := strings.Split(workspacePath, "|")
-	if len(wsPaths) > 1 {
-		var names []string
-		for _, p := range wsPaths {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				names = append(names, filepath.Base(p))
-			}
-		}
-		mintContext = strings.Join(names, " + ")
+	// If the user supplied a project name, use it directly as the mint context.
+	// Otherwise fall back to deriving the context from workspace basenames.
+	var mintContext string
+	if strings.TrimSpace(projectName) != "" {
+		mintContext = strings.TrimSpace(projectName)
 	} else {
-		mintContext = filepath.Base(strings.TrimSpace(workspacePath))
+		wsPaths := strings.Split(workspacePath, "|")
+		if len(wsPaths) > 1 {
+			var names []string
+			for _, p := range wsPaths {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					names = append(names, filepath.Base(p))
+				}
+			}
+			mintContext = strings.Join(names, " + ")
+		} else {
+			mintContext = filepath.Base(strings.TrimSpace(workspacePath))
+		}
 	}
 
 	result := MintCredential(a.ctx, a.db, a.pubKey, a.privKey, engineParam, a.apiKey, a.baseURL, selectedFiles, mintContext)
+
 
 	// If successful, trigger cloud sync and broadcast
 	if !strings.Contains(result, `"error":`) {
@@ -507,7 +544,7 @@ func (a *App) TriggerMint(selectedFiles []string, workspacePath string) string {
 			// VC JSON uses "id" not "vc_id"
 			if vcID, ok := parseResult["id"].(string); ok {
 				if len(a.cloudSyncDirs) > 0 {
-					go a.replicateToCloud(vcID)
+					go a.syncDBToCloud()
 				}
 				// Fire-and-forget broadcast across all registered channels
 				if a.broadcastManager != nil {
@@ -660,238 +697,102 @@ func (a *App) ExportSanitizedJSON(vcID string) string {
 	return string(sanitized)
 }
 
-// RestoreDataFromSync deep-scans all linked cloud sync directories to reconstruct
-// the local SQLite ledger from discovered JSON credentials.
+// RestoreDataFromSync finds the newest verihash_ledger.db across all configured
+// cloud sync directories and atomically restores it as the local ledger.
+// The active DB is backed up to proof_of_work.db.bak before overwrite.
+// Returns JSON: { "credentials": N } on success or { "error": "..." }
 func (a *App) RestoreDataFromSync() string {
-	if a.pubKey == nil {
-		return `{"error": "Identity is locked. Please unlock to verify and restore data."}`
-	}
-	currentDID := pubKeyToDIDKey(a.pubKey)
-
-	type RestoredBlock struct {
-		VC         VCSchema
-		RawData    string
-		VCHash     string
-		PrevVCHash string
+	if len(a.cloudSyncDirs) == 0 {
+		return `{"error": "No cloud sync directories configured."}`
 	}
 
-	revokedMap := make(map[string]bool)
-	blocks := make(map[string]*RestoredBlock)
-
-	totalFound := 0
-
-	// Phase 1: Deep Parse existing files into memory blocks & tombstone markers
+	// Find the newest verihash_ledger.db across all sync dirs
+	var bestPath string
+	var bestMod time.Time
 	for _, syncDir := range a.cloudSyncDirs {
-		archiveDir := filepath.Join(syncDir, "VeriHash_Archive")
-		if _, err := os.Stat(archiveDir); os.IsNotExist(err) {
+		candidate := filepath.Join(syncDir, "verihash_ledger.db")
+		info, err := os.Stat(candidate)
+		if err != nil {
 			continue
 		}
-
-		files, _ := os.ReadDir(archiveDir)
-		for _, f := range files {
-			if f.IsDir() {
-				continue
-			}
-
-			filePath := filepath.Join(archiveDir, f.Name())
-			data, err := os.ReadFile(filePath)
-			if err != nil {
-				continue
-			}
-
-			// Tombstone Extraction
-			if strings.HasSuffix(f.Name(), ".revoke.json") {
-				var revokeData struct {
-					VcID         string  `json:"vc_id"`
-					VcHash       string  `json:"vc_hash"`
-					RevokedAt    float64 `json:"revoked_at"`
-					RevokedByDID string  `json:"revoked_by_did"`
-					Signature    string  `json:"signature"`
-				}
-				if json.Unmarshal(data, &revokeData) == nil && revokeData.VcID != "" {
-				    payload := fmt.Sprintf("VERIHASH_REVOKE|%s|%s|%f|%s", revokeData.VcID, revokeData.VcHash, revokeData.RevokedAt, revokeData.RevokedByDID)
-				    
-				    pubKey, err := extractPubKeyFromDID(revokeData.RevokedByDID)
-				    if err == nil && len(pubKey) == ed25519.PublicKeySize {
-				        sigBytes, sigErr := hex.DecodeString(revokeData.Signature)
-				        if sigErr == nil && ed25519.Verify(pubKey, []byte(payload), sigBytes) {
-					        revokedMap[revokeData.VcID] = true
-				        } else {
-				            runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": fmt.Sprintf("[RESTORE WARNING] Forged tombstone discarded: %s", revokeData.VcID), "type": "err"})
-				        }
-				    }
-				}
-				continue
-			}
-
-			if !strings.HasSuffix(f.Name(), ".json") {
-				continue
-			}
-			
-			totalFound++
-
-			// 1. Cryptographic Verification
-			valid, _ := verifyCredentialDoc(string(data))
-			if !valid {
-				continue
-			}
-
-			// 2. Identity Match Check
-			var vc VCSchema
-			json.Unmarshal(data, &vc)
-			if vc.Issuer != currentDID {
-				continue
-			}
-
-			// 3. Check for existence in local DB
-			var exists int
-			a.db.conn.QueryRow(`SELECT COUNT(*) FROM session_credentials WHERE vc_id = ?`, vc.ID).Scan(&exists)
-			if exists > 0 {
-				continue
-			}
-
-			vcHash := computeSHA256(vc.ID + "|" + vc.Proof.PreviousVCHash + "|" + string(data))
-			blocks[vcHash] = &RestoredBlock{
-				VC:         vc,
-				RawData:    string(data),
-				VCHash:     vcHash,
-				PrevVCHash: vc.Proof.PreviousVCHash,
-			}
+		if bestPath == "" || info.ModTime().After(bestMod) {
+			bestPath = candidate
+			bestMod = info.ModTime()
 		}
 	}
-
-	totalRestored := 0
-	if len(blocks) == 0 {
-		return fmt.Sprintf(`{"found": %d, "restored": %d}`, totalFound, totalRestored)
+	if bestPath == "" {
+		return `{"error": "No verihash_ledger.db found in any configured cloud sync directory."}`
 	}
 
-	// Phase 2: Topological Graph sorting
-	var orderedBlocks []*RestoredBlock
-	
-	nextBlockMap := make(map[string]*RestoredBlock)
-	for _, block := range blocks {
-		nextBlockMap[block.PrevVCHash] = block
+	// Read the source DB
+	dbData, err := os.ReadFile(bestPath)
+	if err != nil {
+		return `{"error": "Cannot read ledger file: ` + strings.ReplaceAll(err.Error(), `"`, `'`) + `"}`
 	}
 
-	var root *RestoredBlock
-	for _, block := range blocks {
-		if _, prevExistsInPool := blocks[block.PrevVCHash]; !prevExistsInPool {
-			root = block
-			break
+	// Backup current DB (best-effort)
+	if existing, readErr := os.ReadFile(dbFile); readErr == nil {
+		_ = os.WriteFile(dbFile+".bak", existing, 0644)
+	}
+
+	// Write to staging then rename (atomic)
+	// On Windows, os.Rename fails with "Access is denied" if the target file has
+	// open handles. We must close the SQLite connection BEFORE the rename, then
+	// reopen it. Linux does not have this restriction.
+	stagingPath := dbFile + ".restore_staging"
+	if err := os.WriteFile(stagingPath, dbData, 0644); err != nil {
+		return `{"error": "Staging write failed: ` + strings.ReplaceAll(err.Error(), `"`, `'`) + `"}`
+	}
+
+	// ── Step 1: Pause all DB-dependent subsystems and close the connection ──
+	if a.indexUpdater != nil {
+		a.indexUpdater.Stop()
+	}
+	if a.db != nil {
+		a.db.conn.Close()
+		a.db = nil
+	}
+
+	// ── Step 2: Atomic rename (now safe — no open handle on dbFile) ──
+	if err := os.Rename(stagingPath, dbFile); err != nil {
+		os.Remove(stagingPath)
+		// Try to reopen original DB so the app remains functional
+		if db, reopenErr := connectDB(); reopenErr == nil {
+			a.db = db
 		}
+		return `{"error": "Cannot activate restored ledger: ` + strings.ReplaceAll(err.Error(), `"`, `'`) + `"}`
 	}
 
-	if root == nil {
-	    for _, block := range blocks {
-	        root = block
-	        break
-	    }
+	// ── Step 3: Reopen fresh DB connection on the restored file ──
+	newDB, err := connectDB()
+	if err != nil {
+		return `{"error": "Ledger restored but failed to reopen: ` + strings.ReplaceAll(err.Error(), `"`, `'`) + `"}`
+	}
+	a.db = newDB
+
+	// ── Step 4: Restart IndexUpdater with the new DB handle ──
+	cfg := a.LoadConfig()
+	if cfg.GitHubPAT != "" {
+		broadcaster := NewGitHubGistBroadcaster(cfg.GitHubPAT)
+		iu := NewIndexUpdater(a.db, broadcaster, "verihash_config.json")
+		a.indexUpdater = iu
+		a.broadcastManager.indexUpdater = iu
+		iu.Start()
 	}
 
-	degraded := false
-	current := root
-	for current != nil {
-		orderedBlocks = append(orderedBlocks, current)
-		nextHash := current.VCHash
-		delete(blocks, current.VCHash) 
-		nextBlock, exists := nextBlockMap[nextHash]
-		if exists && blocks[nextBlock.VCHash] != nil {
-			current = nextBlock
-		} else {
-		    var nextOrphan *RestoredBlock
-        	for _, block := range blocks {
-        		if _, prevExistsInPool := blocks[block.PrevVCHash]; !prevExistsInPool {
-        			nextOrphan = block
-        			break
-        		}
-        	}
-        	if nextOrphan == nil {
-        	    for _, block := range blocks {
-            		nextOrphan = block
-            		break
-            	}
-        	}
-        	if nextOrphan != nil {
-        	    degraded = true
-        	    runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[WARNING] Strict Mode: Degraded chain continuity recovered via splicing.", "type": "err"})
-        	}
-        	current = nextOrphan
-		}
+	// Count credentials in the restored DB for user feedback
+	var credCount int
+	if a.db != nil {
+		_ = a.db.conn.QueryRow(`SELECT COUNT(*) FROM session_credentials`).Scan(&credCount)
 	}
 
-	// Phase 3: Ordered Relational Insert
-	for _, block := range orderedBlocks {
-		pathStr := ""
-		if block.VC.LocalMetadata != nil && len(block.VC.LocalMetadata.FullPaths) > 0 {
-			pathStr = strings.Join(block.VC.LocalMetadata.FullPaths, ",")
-		} else {
-			var names []string
-			for _, f := range block.VC.CredentialSubject.ProofOfWork.Files {
-				names = append(names, f.Name)
-			}
-			pathStr = strings.Join(names, ",")
-		}
-
-		var restoredUnixTime float64
-		if block.VC.CredentialSubject.ProofOfWork.UnixNanoMinting != "" {
-		    if parsedInt, pErr := strconv.ParseFloat(block.VC.CredentialSubject.ProofOfWork.UnixNanoMinting, 64); pErr == nil {
-		        restoredUnixTime = parsedInt / 1e9
-		    }
-		} else {
-            t, err := time.Parse(time.RFC3339, block.VC.IssuanceDate)
-            if err == nil {
-                restoredUnixTime = float64(t.UnixNano()) / 1e9
-            } else {
-                restoredUnixTime = float64(time.Now().UnixNano()) / 1e9
-            }
-		}
-
-		status := 1
-		var revokedAt float64 = 0
-		var revokeSig string = ""
-		
-		if revokedMap[block.VC.ID] {
-			status = 0
-		}
-
-		cProj := block.VC.CredentialSubject.ProofOfWork.ProjectContext
-		cTags := block.VC.CredentialSubject.ProofOfWork.SkillTags
-
-		_, dbErr := a.db.conn.Exec(`
-			INSERT INTO session_credentials
-			(vc_id, timestamp, project_context, ai_insight, skill_tags, file_paths, full_vc_json, status, vc_hash, prev_vc_hash, revoked_at, revoke_signature)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`,
-			block.VC.ID,
-			restoredUnixTime,
-			cProj,
-			block.VC.CredentialSubject.ProofOfWork.AIEvaluation,
-			cTags,
-			pathStr,
-			block.RawData,
-			status,
-			block.VCHash,
-			block.PrevVCHash,
-			revokedAt,
-			revokeSig,
-		)
-
-		if dbErr == nil {
-			totalRestored++
-		}
-	}
-
-	result := fmt.Sprintf(`{"found": %d, "restored": %d, "degraded": %t}`, totalFound, totalRestored, degraded)
-	msgStr := fmt.Sprintf("[RESTORE] Topology restored. %d records found, %d sequentially reconstructed.", totalFound, totalRestored)
-	if degraded {
-	    msgStr = fmt.Sprintf("[RESTORE] Recovered %d files with DEGRADED chain logic.", totalFound)
-	}
 	runtime.EventsEmit(a.ctx, "log", map[string]string{
-		"msg":  msgStr,
+		"msg":  fmt.Sprintf("[RESTORE] Ledger restored from %s (%d credentials). Reload complete.", filepath.Base(bestPath), credCount),
 		"type": "sys",
 	})
-	return result
+	return fmt.Sprintf(`{"credentials": %d, "source": "%s"}`, credCount, strings.ReplaceAll(filepath.Base(bestPath), `"`, `'`))
 }
+
 
 func (a *App) GenerateHistoricReports() {
 }
@@ -940,14 +841,33 @@ func (a *App) RevokeCredential(vcID string) string {
 		return `{"error": "` + err.Error() + `"}`
 	}
 
-	// Dump the cryptographic bundle
-	cleanVcID := strings.ReplaceAll(vcID, ":", "_")
-	revokeJSON := fmt.Sprintf(`{"vc_id": "%s", "vc_hash": "%s", "revoked_at": %f, "revoked_by_did": "%s", "signature": "%s"}`, 
-		vcID, vcHash, revokedAt, did, signatureHex)
-	
-	for _, syncDir := range a.cloudSyncDirs {
-		jsonPath := filepath.Join(syncDir, "VeriHash_Archive", fmt.Sprintf("VeriHash_%s.revoke.json", cleanVcID))
-		_ = os.WriteFile(jsonPath, []byte(revokeJSON), 0644)
+	// Sync the updated DB (with revocation) to all cloud sync dirs
+	if len(a.cloudSyncDirs) > 0 {
+		go a.syncDBToCloud()
+	}
+
+	// Best-effort: stamp the remote Gist with an in-place tombstone for every
+	// broadcast channel. PATCH replaces the VC payload — the Gist URL stays alive
+	// and now resolves to the signed revocation notice. Fire-and-forget so the
+	// UI response is instant regardless of network latency.
+	if a.broadcastManager != nil {
+		capturedVcID := vcID
+		capturedTomb := TombstonePayload{
+			VCID:            vcID,
+			IssuerDID:       did,
+			RevokedAt:       time.Unix(int64(revokedAt), 0).UTC().Format(time.RFC3339),
+			RevokeSignature: signatureHex,
+			OriginalVCHash:  vcHash,
+		}
+		go func() {
+			for channel := range a.broadcastManager.broadcasters {
+				if err := a.broadcastManager.RevokeBroadcast(capturedVcID, channel, capturedTomb); err != nil {
+					log.Printf("[REVOKE] Could not stamp tombstone (%s, %s): %v", capturedVcID[:min(20, len(capturedVcID))]+"...", channel, err)
+				} else {
+					log.Printf("[REVOKE] ✓ Gist tombstoned in-place (%s, %s)", capturedVcID[:min(20, len(capturedVcID))]+"...", channel)
+				}
+			}
+		}()
 	}
 
 	return `{"status": "OK"}`
@@ -1142,80 +1062,38 @@ func (a *App) ImportMnemonic(mnemonic, newPassword, confirm string) string {
 	return `{"status": "OK", "did": "` + pubKeyToDIDKey(pubKey) + `"}`
 }
 
-// replicateToCloud writes the signed JSON credential directly into the flat
-// VeriHash_Archive directory in each configured cloud sync folder.
-func (a *App) replicateToCloud(vcID string) {
-	// Fetch the full constructed JSON from DB
-	var fullJsonStr string
-	err := a.db.conn.QueryRow(`SELECT full_vc_json FROM session_credentials WHERE vc_id = ?`, vcID).Scan(&fullJsonStr)
-	if err != nil || fullJsonStr == "" {
-		runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": fmt.Sprintf("[CLOUD-SYNC] Warning: Could not locate VC JSON for %s", vcID), "type": "err"})
+// syncDBToCloud copies the full proof_of_work.db to every configured cloud sync
+// directory as verihash_ledger.db. Called after Mint and Revoke so the cloud
+// always holds a current snapshot of the complete credential ledger.
+// It is intentionally fire-and-forget (called via goroutine).
+func (a *App) syncDBToCloud() {
+	// WAL checkpoint so the DB file on disk is fully up to date
+	_, _ = a.db.conn.Exec(`PRAGMA wal_checkpoint(FULL);`)
+
+	// Read the DB file
+	dbBytes, err := os.ReadFile(dbFile)
+	if err != nil {
+		runtime.EventsEmit(a.ctx, "log", map[string]string{
+			"msg":  "[CLOUD-SYNC] Cannot read DB for sync: " + err.Error(),
+			"type": "err",
+		})
 		return
 	}
 
-	cleanVcID := strings.ReplaceAll(vcID, ":", "_")
-
 	for _, syncDir := range a.cloudSyncDirs {
-		archiveDir := filepath.Join(syncDir, "VeriHash_Archive")
-		if err := os.MkdirAll(archiveDir, 0755); err != nil {
-			runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": fmt.Sprintf("[CLOUD-SYNC] Failed to create archive dir: %v", err), "type": "err"})
+		destPath := filepath.Join(syncDir, "verihash_ledger.db")
+		if writeErr := os.WriteFile(destPath, dbBytes, 0644); writeErr != nil {
+			runtime.EventsEmit(a.ctx, "log", map[string]string{
+				"msg":  fmt.Sprintf("[CLOUD-SYNC] Failed to sync DB to %s: %v", filepath.Base(syncDir), writeErr),
+				"type": "err",
+			})
 			continue
 		}
-
-		jsonName := fmt.Sprintf("VeriHash_%s.json", cleanVcID)
-		_ = os.WriteFile(filepath.Join(archiveDir, jsonName), []byte(fullJsonStr), 0644)
-
 		runtime.EventsEmit(a.ctx, "log", map[string]string{
-			"msg":  fmt.Sprintf("[CLOUD-SYNC] ✓ Synced %s.json → %s", cleanVcID[:20]+"...", filepath.Base(syncDir)),
+			"msg":  fmt.Sprintf("[CLOUD-SYNC] ✓ verihash_ledger.db → %s", filepath.Base(syncDir)),
 			"type": "sys",
 		})
 	}
-}
-
-// SyncHistoricLedger extracts ALL previously minted VC JSONs from the database
-// and writes them flat into the VeriHash_Archive directory of the specified path.
-// This ensures the cryptographic PreviousVCHash chain is physically continuous
-// in the cloud even if the directory was bound after minting began.
-func (a *App) SyncHistoricLedger(targetDir string) string {
-	rows, err := a.db.conn.Query(`SELECT vc_id, full_vc_json, status, vc_hash, revoked_at, revoke_signature FROM session_credentials`)
-	if err != nil {
-		return `{"error": "Failed to query historic ledger: ` + err.Error() + `"}`
-	}
-	defer rows.Close()
-
-	archiveDir := filepath.Join(targetDir, "VeriHash_Archive")
-	_ = os.MkdirAll(archiveDir, 0755)
-
-	count := 0
-	for rows.Next() {
-		var vcID, fullJsonStr, vcHash, revokeSig string
-		var status int
-		var revokedAt float64
-		if err := rows.Scan(&vcID, &fullJsonStr, &status, &vcHash, &revokedAt, &revokeSig); err == nil && fullJsonStr != "" {
-			cleanVcID := strings.ReplaceAll(vcID, ":", "_")
-			jsonPath := filepath.Join(archiveDir, fmt.Sprintf("VeriHash_%s.json", cleanVcID))
-
-			// Write the VC object if missing
-			if _, statErr := os.Stat(jsonPath); os.IsNotExist(statErr) {
-				_ = os.WriteFile(jsonPath, []byte(fullJsonStr), 0644)
-				count++
-			}
-			
-			// Determine if a tombstone needs to be paired
-			if status == 0 && revokeSig != "" {
-			    revokePath := filepath.Join(archiveDir, fmt.Sprintf("VeriHash_%s.revoke.json", cleanVcID))
-			    if _, statErr := os.Stat(revokePath); os.IsNotExist(statErr) {
-			        revokeJSON := fmt.Sprintf(`{"vc_id": "%s", "vc_hash": "%s", "revoked_at": %f, "revoked_by_did": "%s", "signature": "%s"}`, 
-		                vcID, vcHash, revokedAt, a.GetDID(), revokeSig)
-			        _ = os.WriteFile(revokePath, []byte(revokeJSON), 0644)
-			    }
-			}
-		}
-	}
-
-	msg := fmt.Sprintf("[CLOUD-SYNC] Historic chain repair complete: %d credential(s) pushed to %s", count, filepath.Base(targetDir))
-	runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": msg, "type": "sys"})
-	return fmt.Sprintf(`{"status": "OK", "synced": %d}`, count)
 }
 
 // ── Broadcast Wails Bindings ──────────────────────────────────────────────────
@@ -1248,6 +1126,60 @@ func (a *App) GetBroadcastStatus(vcID string) []BroadcastPublication {
 	return pubs
 }
 
+// ResetBroadcastVC clears the broadcast record for a given VC and channel back
+// to 'pending', allowing the user to re-broadcast after deleting the remote Gist.
+// This is intentionally separate from BroadcastVC so it requires an explicit user action.
+func (a *App) ResetBroadcastVC(vcID, channel string) string {
+	if err := a.db.ResetBroadcastForVC(vcID, channel); err != nil {
+		return `{"error": "` + strings.ReplaceAll(err.Error(), `"`, `'`) + `"}`
+	}
+	log.Printf("[BROADCAST] Reset broadcast record for (%s, %s)", vcID[:min(20, len(vcID))]+"...", channel)
+	return `{"status": "reset"}`
+}
+
+// DeleteBroadcastVC deletes the remote artifact (e.g. the GitHub Gist) for the
+// given VC and channel, then fully wipes the broadcast DB record so the user can
+// re-broadcast from scratch. Unlike RevokeCredential, the local credential itself
+// is NOT affected — it stays valid in the Ledger.
+func (a *App) DeleteBroadcastVC(vcID, channel string) string {
+	if a.broadcastManager == nil {
+		return `{"error": "Broadcast manager not initialized"}`
+	}
+	b, ok := a.broadcastManager.broadcasters[channel]
+	if !ok {
+		return `{"error": "No broadcaster registered for channel: ` + channel + `"}`
+	}
+
+	// Look up the remote_id to delete
+	pubs, err := a.db.GetBroadcastsByVC(vcID)
+	if err != nil {
+		return `{"error": "DB lookup failed: ` + strings.ReplaceAll(err.Error(), `"`, `'`) + `"}`
+	}
+	var remoteID string
+	for _, p := range pubs {
+		if p.Channel == channel {
+			remoteID = p.RemoteID
+			break
+		}
+	}
+	if remoteID == "" {
+		return `{"error": "No published artifact found for this credential"}`
+	}
+
+	// Delete the remote artifact (404 = already gone, treat as success)
+	if err := b.Delete(remoteID); err != nil {
+		return `{"error": "` + strings.ReplaceAll(err.Error(), `"`, `'`) + `"}`
+	}
+
+	// Fully wipe the broadcast record (including remote_id) so next broadcast creates fresh
+	if err := a.db.ClearBroadcastRecord(vcID, channel); err != nil {
+		log.Printf("[BROADCAST] Warning: Gist deleted but DB clear failed: %v", err)
+	}
+
+	log.Printf("[BROADCAST] Gist deleted and record cleared for (%s, %s)", vcID[:min(20, len(vcID))]+"...", channel)
+	return `{"status": "deleted"}`
+}
+
 // GetProfileIndex generates and returns the public root index JSON as a string.
 // The index aggregates all publicly broadcast credentials for this identity and
 // is intended to be published as a pinned Gist (verihash_profile_index.json).
@@ -1257,65 +1189,76 @@ func (a *App) GetProfileIndex() string {
 	if err != nil {
 		return `{"error": "Failed to generate profile index: ` + strings.ReplaceAll(err.Error(), `"`, `'`) + `"}`
 	}
+	// Inject profile from config
+	cfg := a.LoadConfig()
+	index.Profile = ProfileInfo{
+		Name:    cfg.ProfileName,
+		Website: cfg.ProfileWebsite,
+		Custom:  cfg.ProfileCustom,
+	}
+	if cfg.ProfileName != "" {
+		index.DisplayName = cfg.ProfileName
+	} else {
+		index.DisplayName = cfg.DisplayName
+	}
 	out, _ := json.MarshalIndent(index, "", "  ")
 	return string(out)
 }
 
-// ── .vhb Cold Backup Wails Bindings ──────────────────────────────────────────
-
-// ExportVHBBackup creates an encrypted .vhb cold backup of the ledger database
-// and public identity. The backup password is independent of the vault password.
-// Returns JSON: { "status": "OK", "path": "<abs-path>" } or { "error": "..." }
-func (a *App) ExportVHBBackup(backupPassword, confirmPassword string) string {
-	did := a.GetDID()
-	absPath, err := ExportVHB(a.db, did, backupPassword, confirmPassword)
-	if err != nil {
-		errMsg := strings.ReplaceAll(err.Error(), `"`, `'`)
-		return `{"error": "` + errMsg + `"}`
+// GetProfileInfo returns the current public profile fields stored in config.
+func (a *App) GetProfileInfo() string {
+	var existingCfg Config
+	if b, err := os.ReadFile("verihash_config.json"); err == nil {
+		json.Unmarshal(b, &existingCfg)
 	}
-	runtime.EventsEmit(a.ctx, "log", map[string]string{
-		"msg":  "[BACKUP] .vhb cold backup created: " + absPath,
-		"type": "sys",
-	})
-	out, _ := json.Marshal(map[string]string{"status": "OK", "path": absPath})
-	return string(out)
-}
-
-// ImportVHBBackup opens a file dialog for the user to select a .vhb file,
-// then decrypts and restores the ledger and identity.
-// NOTE: The private key is NOT restored — the user must re-enter their mnemonic
-// after import to rebuild their keypair (shown via the wallet flow on next launch).
-// Returns JSON: { "status": "OK", "did": "...", "credentials": N } or { "error": "..." }
-func (a *App) ImportVHBBackup(backupPassword string) string {
-	// Open file dialog
-	vhbPath, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "Select VeriHash Backup (.vhb)",
-		Filters: []runtime.FileFilter{
-			{DisplayName: "VeriHash Backup (*.vhb)", Pattern: "*.vhb"},
-			{DisplayName: "All Files (*.*)", Pattern: "*.*"},
-		},
-	})
-	if err != nil || vhbPath == "" {
-		return `{"error": "No file selected"}`
-	}
-
-	manifest, err := ImportVHB(vhbPath, backupPassword)
-	if err != nil {
-		errMsg := strings.ReplaceAll(err.Error(), `"`, `'`)
-		return `{"error": "` + errMsg + `"}`
-	}
-
-	runtime.EventsEmit(a.ctx, "log", map[string]string{
-		"msg":  fmt.Sprintf("[BACKUP] Ledger restored from .vhb: %d credential(s), DID: %s", manifest.CredentialCount, manifest.DID),
-		"type": "sys",
-	})
-
 	out, _ := json.Marshal(map[string]interface{}{
-		"status":      "OK",
-		"did":         manifest.DID,
-		"credentials": manifest.CredentialCount,
-		"exported_at": manifest.ExportedAt,
+		"name":    existingCfg.ProfileName,
+		"website": existingCfg.ProfileWebsite,
+		"custom":  existingCfg.ProfileCustom,
+		"index_gist_url": existingCfg.IndexGistURL,
 	})
 	return string(out)
 }
+
+// SaveProfileInfo persists the public profile fields (name, website, custom key-values)
+// to verihash_config.json and signals the IndexUpdater to push an updated index Gist.
+// All fields are optional \u2014 empty values are stored as empty strings / nil maps.
+func (a *App) SaveProfileInfo(name, website string, customJSON string) string {
+	var existingCfg Config
+	if b, err := os.ReadFile("verihash_config.json"); err == nil {
+		json.Unmarshal(b, &existingCfg)
+	}
+
+	// Parse the custom key-value pairs from JSON string sent by frontend
+	var custom map[string]string
+	if customJSON != "" && customJSON != "{}" && customJSON != "null" {
+		if err := json.Unmarshal([]byte(customJSON), &custom); err != nil {
+			return `{"error": "Invalid custom fields JSON: ` + strings.ReplaceAll(err.Error(), `"`, `'`) + `"}`
+		}
+	}
+
+	existingCfg.ProfileName = strings.TrimSpace(name)
+	existingCfg.ProfileWebsite = strings.TrimSpace(website)
+	existingCfg.ProfileCustom = custom
+	// Keep display_name in sync for backwards compat
+	existingCfg.DisplayName = existingCfg.ProfileName
+
+	out, err := json.MarshalIndent(existingCfg, "", "  ")
+	if err != nil {
+		return `{"error": "Failed to serialize config"}`
+	}
+	if err := os.WriteFile("verihash_config.json", out, 0644); err != nil {
+		return `{"error": "Failed to write config: ` + strings.ReplaceAll(err.Error(), `"`, `'`) + `"}`
+	}
+
+	// Trigger index update so the change appears in the public Gist promptly
+	if a.indexUpdater != nil {
+		a.indexUpdater.Signal()
+	}
+
+	log.Printf("[PROFILE] Public profile updated: name=%q website=%q custom_fields=%d",
+		existingCfg.ProfileName, existingCfg.ProfileWebsite, len(custom))
+	return `{"status": "saved"}`
+}
+
 

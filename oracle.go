@@ -359,6 +359,12 @@ FILE MANIFEST (each file listed with its physical OS modification date as a tamp
 		return string(errBytes)
 	}
 
+	// Split AI output into clean audit text + structured skill tags.
+	// ai_insight stores ONLY the [WORKLOAD AUDIT] prose.
+	// skill_tags stores the extracted tags as a separate comma-delimited field.
+	parsedTags := parseSkillTagsFromAI(aiResult)
+	cleanAIResult := stripSkillTagsFromAI(aiResult)
+
 	// 4. Forge Verifiable Credential
 	vcID := "urn:uuid:" + computeSHA256(fmt.Sprintf("%d", time.Now().UnixNano()))
 	issuerDID := pubKeyToDIDKey(pubKey) // W3C did:key format
@@ -381,10 +387,10 @@ FILE MANIFEST (each file listed with its physical OS modification date as a tamp
 				TimestampRange:  []float64{minTs, maxTs},
 				Files:           fileManifest, // name + sha256 only — no full paths
 				AIEngine:        aiEngineUsed,
-				AIEvaluation:    aiResult,
+				AIEvaluation:    cleanAIResult,
 				HashChainRoot:   latestHash,
 				ProjectContext:  workspacePath,
-				SkillTags:       "",
+				SkillTags:       strings.Join(parsedTags, ", "),
 				UnixNanoMinting: fmt.Sprintf("%d", time.Now().UnixNano()),
 			},
 		},
@@ -445,8 +451,8 @@ FILE MANIFEST (each file listed with its physical OS modification date as a tamp
 		vcID,
 		float64(time.Now().UnixNano())/1e9,
 		workspacePath,
-		aiResult,
-		"",
+		cleanAIResult,
+		strings.Join(parsedTags, ", "),
 		filePathsStr,
 		string(finalJSON),
 		vcHash,
@@ -788,3 +794,45 @@ func callClaude(prompt, apiKey, modelName string) (string, error) {
 	return "", fmt.Errorf("failed to parse Claude response")
 }
 
+// parseSkillTagsFromAI extracts individual skill tag strings from the
+// [VERIFIED SKILL TAGS] section of the AI output. Lines starting with '*'
+// or '-' are treated as tag entries. Returns an empty (non-nil) slice if
+// no section is found so JSON marshalling produces [] instead of null.
+func parseSkillTagsFromAI(aiText string) []string {
+	tags := []string{} // never nil — ensures JSON [] not null
+	inSection := false
+	for _, line := range strings.Split(aiText, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "[VERIFIED SKILL TAGS]") {
+			inSection = true
+			continue
+		}
+		if inSection {
+			// Stop at the next section header or blank separator
+			if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+				break
+			}
+			// Strip bullet markers (* or -)
+			if strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "- ") {
+				tag := strings.TrimSpace(trimmed[2:])
+				if tag != "" {
+					tags = append(tags, tag)
+				}
+			}
+		}
+	}
+	return tags
+}
+
+// stripSkillTagsFromAI returns only the [WORKLOAD AUDIT] prose from the AI
+// output, removing the [VERIFIED SKILL TAGS] section and everything after it.
+// This keeps ai_insight clean and prevents duplicate tag data.
+func stripSkillTagsFromAI(aiText string) string {
+	// Find the start of the skill tags section
+	marker := "[VERIFIED SKILL TAGS]"
+	if idx := strings.Index(aiText, marker); idx >= 0 {
+		return strings.TrimRight(aiText[:idx], " \t\r\n")
+	}
+	// No tags section found — return as-is (already clean)
+	return strings.TrimSpace(aiText)
+}

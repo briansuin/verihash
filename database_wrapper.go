@@ -73,6 +73,16 @@ func initDB() error {
 	db.Exec(`ALTER TABLE session_credentials ADD COLUMN prev_vc_hash TEXT DEFAULT '';`)
 	db.Exec(`ALTER TABLE session_credentials ADD COLUMN revoked_at INTEGER DEFAULT 0;`)
 	db.Exec(`ALTER TABLE session_credentials ADD COLUMN revoke_signature TEXT DEFAULT '';`)
+
+	// Startup cleanup: remove orphaned 'pending' broadcast records that were never
+	// attempted (attempt_count=0, remote_id=''). These are left over from a buggy
+	// version of Del-Gist that set status='pending' instead of deleting the row.
+	// Legitimate pending records from an in-flight BroadcastVC call are also safe
+	// to remove on restart — the goroutine that drives them dies with the process,
+	// so the user would need to re-trigger Broadcast anyway.
+	db.Exec(`DELETE FROM broadcast_publications
+		WHERE status = 'pending' AND attempt_count = 0 AND remote_id = '';`)
+
 	return nil
 }
 
@@ -373,3 +383,40 @@ func (db *VeriHashDB) GetPendingBroadcasts(channel string) ([]BroadcastPublicati
 	}
 	return pubs, nil
 }
+
+// ResetBroadcastForVC resets a broadcast record back to 'pending' so the user
+// can re-broadcast. remote_id is intentionally PRESERVED so runWithRetry can
+// attempt a PATCH update of the existing Gist rather than always creating a new
+// one. If the Gist has been deleted, the 404 fallback in runWithRetry will
+// transparently create a fresh Gist.
+// Unlike UpsertBroadcastJob, this unconditionally overwrites even 'success' records.
+func (db *VeriHashDB) ResetBroadcastForVC(vcID, channel string) error {
+	now := float64(time.Now().UnixNano()) / 1e9
+	_, err := db.conn.Exec(`
+		UPDATE broadcast_publications
+		SET status          = 'pending',
+		    remote_url      = '',
+		    last_error      = '',
+		    attempt_count   = 0,
+		    last_attempt_at = 0,
+		    next_retry_at   = 0,
+		    updated_at      = ?
+		WHERE vc_id = ? AND channel = ?
+	`, now, vcID, channel)
+	return err
+}
+
+// ClearBroadcastRecord completely removes the broadcast record for the given
+// VC+channel. Used after a successful Del-Gist so the frontend sees the
+// credential as "never broadcast" — no stale pending/publishing state.
+// The next BroadcastVC call will re-insert a fresh row via UpsertBroadcastJob.
+func (db *VeriHashDB) ClearBroadcastRecord(vcID, channel string) error {
+	_, err := db.conn.Exec(`
+		DELETE FROM broadcast_publications
+		WHERE vc_id = ? AND channel = ?
+	`, vcID, channel)
+	return err
+}
+
+
+

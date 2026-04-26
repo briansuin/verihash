@@ -153,9 +153,16 @@
                     </section>
                 </div>
 
-                <!-- LOWER LAYER: Static Action Base -->
-                <div class="action-footer">
-                    <button class="cyber-btn lg pulse-glow" id="btn-mint">
+                <!-- LOWER LAYER: Static Action Base (hidden until a workspace is selected) -->
+                <div class="action-footer" id="action-footer" style="display: none; flex-direction: row; align-items: stretch; gap: 10px;">
+                    <input type="text" id="input-project-name"
+                        placeholder="Project name (optional - written to Gist title &amp; index)"
+                        style="flex: 1; padding: 12px 16px; font-size: 0.82rem; background: rgba(0,0,0,0.4);
+                               border: 1px dashed rgba(0,255,204,0.45); color: var(--primary); outline: none;
+                               font-family: var(--font-mono); letter-spacing: 0.04em; border-radius: 2px;
+                               transition: border-color 0.2s; min-height: 0;">
+                    <button class="cyber-btn lg pulse-glow" id="btn-mint"
+                        style="width: auto; min-width: 210px; flex-shrink: 0; padding: 0 28px;">
                         <span class="btn-text">MINT_CREDENTIAL</span>
                     </button>
                 </div>
@@ -216,18 +223,20 @@
                             style="font-size: 0.75rem; color: #00ffcc88; line-height: 1.6; margin-bottom: 15px;"></div>
                     </div>
                     <div class="drawer-footer">
-                        <div style="display: flex; gap: 8px;">
-                            <button class="cyber-btn sm" id="btn-export-json" style="flex: 1;">[ EXPORT JSON RECEIPT
-                                ]</button>
-                            <button class="cyber-btn sm" id="btn-generate-html" style="flex: 1;">[ GENERATE HTML REPORT
-                                ]</button>
+                        <div class="drawer-btn-row">
+                            <button class="cyber-btn sm" id="btn-export-json">[ EXPORT JSON RECEIPT ]</button>
+                            <button class="cyber-btn sm" id="btn-generate-html">[ GENERATE HTML REPORT ]</button>
                             <button class="cyber-btn sm" id="btn-verify-sig"
                                 title="Cryptographically verify the Ed25519 signature on this credential"
-                                style="flex: 1; font-size: 0.65rem; border-color: rgba(0,255,204,0.35);">[ VERIFY
-                                SIGNATURE ]</button>
+                                style="border-color: rgba(0,255,204,0.35);">[ VERIFY SIGNATURE ]</button>
+                            <button class="cyber-btn sm" id="btn-broadcast-gist"
+                                title="Broadcast this credential as a sanitized public Gist."
+                                style="border-color: rgba(0,180,255,0.45); color: rgba(0,200,255,0.9);">[ 📡 BROADCAST GIST ]</button>
                             <button class="cyber-btn sm revoke-btn" id="btn-revoke-credential"
-                                title="Soft-revoke this credential. The record is preserved in the database but removed from the active Ledger view.">[
-                                REVOKE ]</button>
+                                title="Soft-revoke this credential.">[ REVOKE ]</button>
+                        </div>
+                        <div id="broadcast-status"
+                            style="display:none; margin-top: 6px; font-size: 0.68rem; padding: 5px 10px; border-radius: 3px;">
                         </div>
                         <div id="verify-sig-status"
                             style="display:none; margin-top: 6px; font-size: 0.68rem; padding: 5px 10px; border-radius: 3px;">

@@ -286,9 +286,9 @@ body.minting-mode {
     border: 1px solid var(--border);
     border-radius: 4px;
     margin-top: 15px;
-    max-height: 300px;
     display: flex;
     flex-direction: column;
+    min-height: 0;
 }
 
 .drawer-header {
@@ -310,6 +310,20 @@ body.minting-mode {
     flex-shrink: 0;
     padding: 10px 15px;
     border-top: 1px dashed var(--border);
+}
+
+/* Button row in credential drawer footer — wraps to a second line when narrow */
+.drawer-btn-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+/* Unified font size for all action buttons in the drawer — overrides .cyber-btn.sm default */
+.drawer-btn-row .cyber-btn.sm {
+    font-size: 0.72rem;
+    padding: 5px 10px;
+    white-space: nowrap;
 }
 
 .hud-header {

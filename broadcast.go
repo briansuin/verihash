@@ -2,13 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"math"
 	"net/http"
+	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,16 +24,29 @@ import (
 // this struct — never from full_vc_json directly.
 
 // BroadcastPayload holds the public-safe fields extracted from a credential.
+// PRIVACY: project names, file names, and workspace paths are intentionally
+// excluded — they can contain client names, contract titles, or other PII.
 type BroadcastPayload struct {
-	VCID        string   `json:"vc_id"`
-	Issuer      string   `json:"issuer"`
-	IssuedAt    string   `json:"issued_at"`
-	ProjectName string   `json:"project_name"`
-	AIInsight   string   `json:"ai_insight"`
-	SkillTags   []string `json:"skill_tags"`
-	VCHash      string   `json:"vc_hash"`
-	Signature   string   `json:"proof_signature"`
-	AIEngine    string   `json:"ai_engine,omitempty"`
+	VCID      string   `json:"vc_id"`
+	Issuer    string   `json:"issuer"`
+	IssuedAt  string   `json:"issued_at"`
+	AIInsight string   `json:"ai_insight"`
+	SkillTags []string `json:"skill_tags"`
+	VCHash    string   `json:"vc_hash"`
+	Signature string   `json:"proof_signature"`
+	AIEngine  string   `json:"ai_engine,omitempty"`
+}
+
+// TombstonePayload carries the data needed to publish an in-place revocation
+// notice on a broadcast artifact. The original VC file is renamed and its
+// content is replaced with this signed tombstone — the Gist URL remains stable
+// so all external references continue to resolve to the revocation notice.
+type TombstonePayload struct {
+	VCID            string `json:"vc_id"`
+	IssuerDID       string `json:"issuer_did"`
+	RevokedAt       string `json:"revoked_at"`       // RFC3339
+	RevokeSignature string `json:"revoke_signature"` // Ed25519 hex
+	OriginalVCHash  string `json:"original_vc_hash"` // SHA256 of the original VC
 }
 
 // NewBroadcastPayload constructs a sanitized BroadcastPayload from the DB.
@@ -52,8 +68,10 @@ func NewBroadcastPayload(db *VeriHashDB, vcID string) (*BroadcastPayload, error)
 
 	pow := vc.CredentialSubject.ProofOfWork
 
-	// Parse skill tags — stored as a comma-separated string in the DB
-	var tags []string
+	// Parse skill tags — prefer the dedicated field (comma-separated).
+	// For legacy credentials where skill_tags was never populated, fall back to
+	// extracting tags directly from the AI evaluation text.
+	tags := []string{} // never nil — ensures JSON [] not null
 	rawTags := strings.TrimSpace(pow.SkillTags)
 	if rawTags != "" {
 		for _, t := range strings.Split(rawTags, ",") {
@@ -62,18 +80,20 @@ func NewBroadcastPayload(db *VeriHashDB, vcID string) (*BroadcastPayload, error)
 				tags = append(tags, t)
 			}
 		}
+	} else if pow.AIEvaluation != "" {
+		// Fallback: parse tags out of the AI insight text for old credentials
+		tags = parseSkillTagsFromAI(pow.AIEvaluation)
 	}
 
 	return &BroadcastPayload{
-		VCID:        vc.ID,
-		Issuer:      vc.Issuer,
-		IssuedAt:    vc.IssuanceDate,
-		ProjectName: pow.ProjectContext,
-		AIInsight:   pow.AIEvaluation,
-		SkillTags:   tags,
-		VCHash:      vcHash,
-		Signature:   vc.Proof.ProofValue,
-		AIEngine:    pow.AIEngine,
+		VCID:      vc.ID,
+		Issuer:    vc.Issuer,
+		IssuedAt:  vc.IssuanceDate,
+		AIInsight: stripSkillTagsFromAI(pow.AIEvaluation), // strip tags section for legacy credentials
+		SkillTags: tags,
+		VCHash:    vcHash,
+		Signature: vc.Proof.ProofValue,
+		AIEngine:  pow.AIEngine,
 	}, nil
 }
 
@@ -85,10 +105,19 @@ func NewBroadcastPayload(db *VeriHashDB, vcID string) (*BroadcastPayload, error)
 type Broadcaster interface {
 	// Channel returns the canonical channel name, e.g. "gist" or "nostr".
 	Channel() string
-	// Publish sends the payload to the channel and returns the remote ID and URL.
+	// Publish creates a new remote artifact and returns the remote ID and URL.
 	Publish(payload BroadcastPayload) (remoteID, remoteURL string, err error)
-	// Revoke attempts to physically delete the broadcast artifact by its remote ID.
-	Revoke(remoteID string) error
+	// Update replaces the content of an existing remote artifact identified by
+	// remoteID. Returns notFound=true if the artifact no longer exists so the
+	// caller can fall back to Publish.
+	Update(remoteID string, payload BroadcastPayload) (remoteURL string, notFound bool, err error)
+	// Revoke replaces the broadcast artifact content with a signed tombstone
+	// notice in-place (PATCH). The remote URL never changes — external references
+	// remain valid and resolve to the revocation notice. Returns the remote URL.
+	Revoke(remoteID string, tombstone TombstonePayload) (remoteURL string, err error)
+	// Delete physically removes the broadcast artifact. Used only when clearing
+	// a broadcast record without revoking the credential (e.g. before re-publishing).
+	Delete(remoteID string) error
 }
 
 // ── BroadcastManager ─────────────────────────────────────────────────────────
@@ -104,6 +133,7 @@ const (
 type BroadcastManager struct {
 	broadcasters map[string]Broadcaster
 	db           *VeriHashDB
+	indexUpdater *IndexUpdater // Phase 4.5: notified on every successful Publish/Revoke
 }
 
 // NewBroadcastManager creates an empty BroadcastManager.
@@ -142,20 +172,69 @@ func (bm *BroadcastManager) BroadcastVC(vcID string) {
 	}
 }
 
-// runWithRetry executes Publish with exponential backoff up to maxBroadcastAttempts.
-// The local DB status is the only thing updated; the local ledger is never touched.
+// runWithRetry executes Publish (or Update for re-broadcasts) with exponential
+// backoff up to maxBroadcastAttempts. If the DB already has a remote_id for this
+// VC+channel, Update is attempted first; a 404 (deleted Gist) transparently falls
+// back to Publish so a fresh artifact is created.
 func (bm *BroadcastManager) runWithRetry(b Broadcaster, payload BroadcastPayload) {
 	vcID := payload.VCID
 	channel := b.Channel()
 
-	for attempt := 1; attempt <= maxBroadcastAttempts; attempt++ {
-		// Mark as "publishing" so the UI can show an in-progress state
-		_ = bm.db.UpdateBroadcastStatus(vcID, channel, "publishing", "", "", "")
+	// Read existingRemoteID ONCE, BEFORE any status update that would clear it.
+	// UpdateBroadcastStatus writes all fields including remote_id, so if we call
+	// it with "" first we'd lose the preserved remote_id from ResetBroadcastForVC.
+	var existingRemoteID string
+	if pubs, dbErr := bm.db.GetBroadcastsByVC(vcID); dbErr == nil {
+		for _, p := range pubs {
+			if p.Channel == channel {
+				existingRemoteID = p.RemoteID
+				break
+			}
+		}
+	}
+	log.Printf("[BROADCAST] runWithRetry: vc=%s channel=%s existingRemoteID=%q",
+		vcID[:min(20, len(vcID))]+"...", channel, existingRemoteID)
 
-		remoteID, remoteURL, err := b.Publish(payload)
+	for attempt := 1; attempt <= maxBroadcastAttempts; attempt++ {
+		// Mark as "publishing" — pass existingRemoteID through so it is not overwritten with ""
+		_ = bm.db.UpdateBroadcastStatus(vcID, channel, "publishing", existingRemoteID, "", "")
+
+		var remoteID, remoteURL string
+		var err error
+
+		if existingRemoteID != "" {
+			// Attempt to UPDATE the existing remote artifact in-place (PATCH)
+			var notFound bool
+			remoteURL, notFound, err = b.Update(existingRemoteID, payload)
+			if err == nil {
+				// Updated in-place — keep the same remote ID
+				remoteID = existingRemoteID
+			} else if notFound {
+				// Remote was deleted by user — fall back to creating a new one
+				log.Printf("[BROADCAST] Remote %s not found (deleted?), creating new artifact", existingRemoteID)
+				remoteID, remoteURL, err = b.Publish(payload)
+				if err == nil {
+					// New artifact created — update existingRemoteID so retries also use PATCH
+					existingRemoteID = remoteID
+				}
+			}
+			// else: non-404 network error — err is set, fall through to retry logic
+		} else {
+			// First-time publish
+			remoteID, remoteURL, err = b.Publish(payload)
+			if err == nil {
+				// Store so subsequent retries (if any) use PATCH not POST
+				existingRemoteID = remoteID
+			}
+		}
+
 		if err == nil {
 			_ = bm.db.UpdateBroadcastStatus(vcID, channel, "success", remoteID, remoteURL, "")
 			log.Printf("[BROADCAST] ✓ %s → %s: %s", vcID[:20]+"...", channel, remoteURL)
+			// Signal the IndexUpdater so the public root index reflects the new VC
+			if bm.indexUpdater != nil {
+				bm.indexUpdater.Signal()
+			}
 			return
 		}
 
@@ -165,7 +244,8 @@ func (bm *BroadcastManager) runWithRetry(b Broadcaster, payload BroadcastPayload
 		log.Printf("[BROADCAST] ✗ %s → %s (attempt %d/%d): %s. Retrying in %v",
 			vcID[:min(20, len(vcID))]+"...", channel, attempt, maxBroadcastAttempts, lastErr, backoff)
 
-		_ = bm.db.UpdateBroadcastStatus(vcID, channel, "failed", "", "", lastErr)
+		// Preserve existingRemoteID on failure so the next attempt can still try PATCH
+		_ = bm.db.UpdateBroadcastStatus(vcID, channel, "failed", existingRemoteID, "", lastErr)
 
 		if attempt < maxBroadcastAttempts {
 			time.Sleep(backoff)
@@ -175,23 +255,26 @@ func (bm *BroadcastManager) runWithRetry(b Broadcaster, payload BroadcastPayload
 	log.Printf("[BROADCAST] Gave up broadcasting %s → %s after %d attempts", vcID, channel, maxBroadcastAttempts)
 }
 
-// RevokeBroadcast physically deletes the remote artifact for the given channel
-// and marks the broadcast record as revoked in the DB.
-func (bm *BroadcastManager) RevokeBroadcast(vcID, channel string) error {
+
+// RevokeBroadcast stamps the remote broadcast artifact with an in-place tombstone
+// (PATCH — the Gist URL stays alive) and marks the record as "revoked" in the DB.
+// The remote_url is preserved because the Gist still exists as a tombstone.
+func (bm *BroadcastManager) RevokeBroadcast(vcID, channel string, tombstone TombstonePayload) error {
 	b, ok := bm.broadcasters[channel]
 	if !ok {
 		return fmt.Errorf("no broadcaster registered for channel %q", channel)
 	}
 
-	// Fetch the remote_id from DB
+	// Fetch the remote_id and existing URL from DB
 	pubs, err := bm.db.GetBroadcastsByVC(vcID)
 	if err != nil {
 		return fmt.Errorf("DB lookup failed: %w", err)
 	}
-	var remoteID string
+	var remoteID, existingURL string
 	for _, p := range pubs {
 		if p.Channel == channel {
 			remoteID = p.RemoteID
+			existingURL = p.RemoteURL
 			break
 		}
 	}
@@ -199,11 +282,23 @@ func (bm *BroadcastManager) RevokeBroadcast(vcID, channel string) error {
 		return fmt.Errorf("no remote_id found for (%s, %s) — cannot revoke", vcID, channel)
 	}
 
-	if err := b.Revoke(remoteID); err != nil {
-		return fmt.Errorf("remote revoke failed: %w", err)
+	remoteURL, err := b.Revoke(remoteID, tombstone)
+	if err != nil {
+		return fmt.Errorf("remote tombstone failed: %w", err)
 	}
 
-	return bm.db.UpdateBroadcastStatus(vcID, channel, "revoked", remoteID, "", "")
+	// Preserve the URL — Gist still exists as a tombstone at the same address
+	if remoteURL == "" {
+		remoteURL = existingURL
+	}
+	if err := bm.db.UpdateBroadcastStatus(vcID, channel, "revoked", remoteID, remoteURL, ""); err != nil {
+		return err
+	}
+	// Signal the IndexUpdater so the revocation appears in the public root index
+	if bm.indexUpdater != nil {
+		bm.indexUpdater.Signal()
+	}
+	return nil
 }
 
 // min is a helper for Go versions before 1.21 which lack the built-in min().
@@ -249,7 +344,12 @@ func (g *GitHubGistBroadcaster) Publish(payload BroadcastPayload) (remoteID, rem
 
 	// Gist file name: safe filename derived from vc_id
 	fileName := strings.ReplaceAll(payload.VCID, ":", "_") + ".json"
-	description := fmt.Sprintf("VeriHash VC — %s [%s]", payload.ProjectName, payload.IssuedAt[:10])
+	// Description: skill tags + date — never project/file names (privacy)
+	descLabel := payload.IssuedAt[:10]
+	if len(payload.SkillTags) > 0 {
+		descLabel = payload.SkillTags[0] + " [" + payload.IssuedAt[:10] + "]"
+	}
+	description := "VeriHash VC — " + descLabel
 
 	body := map[string]interface{}{
 		"description": description,
@@ -293,8 +393,153 @@ func (g *GitHubGistBroadcaster) Publish(payload BroadcastPayload) (remoteID, rem
 	return result.ID, result.HTMLURL, nil
 }
 
-// Revoke physically deletes a Gist by its ID.
-func (g *GitHubGistBroadcaster) Revoke(gistID string) error {
+// Update patches an existing Gist in-place with fresh payload content.
+// Returns notFound=true when the Gist has been deleted (HTTP 404) so the
+// caller can transparently fall back to Publish.
+func (g *GitHubGistBroadcaster) Update(gistID string, payload BroadcastPayload) (remoteURL string, notFound bool, err error) {
+	if g.pat == "" {
+		return "", false, fmt.Errorf("GitHub PAT is not configured")
+	}
+
+	payloadBytes, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "", false, fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	fileName := strings.ReplaceAll(payload.VCID, ":", "_") + ".json"
+	// Description: skill tags + date — never project/file names (privacy)
+	descLabel := payload.IssuedAt[:10]
+	if len(payload.SkillTags) > 0 {
+		descLabel = payload.SkillTags[0] + " [" + payload.IssuedAt[:10] + "]"
+	}
+	description := "VeriHash VC — " + descLabel
+
+	body := map[string]interface{}{
+		"description": description,
+		"files": map[string]interface{}{
+			fileName: map[string]string{
+				"content": string(payloadBytes),
+			},
+		},
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req, err := http.NewRequest("PATCH", githubAPIBase+"/gists/"+gistID, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", false, fmt.Errorf("request build failed: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+g.pat)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return "", false, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		// Gist was deleted on GitHub — caller should fall back to Publish
+		return "", true, fmt.Errorf("gist %s not found (deleted)", gistID)
+	}
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", false, fmt.Errorf("GitHub API error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result struct {
+		HTMLURL string `json:"html_url"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", false, fmt.Errorf("failed to parse GitHub PATCH response: %w", err)
+	}
+
+	log.Printf("[BROADCAST] Updated Gist %s in-place", gistID)
+	return result.HTMLURL, false, nil
+}
+
+// Revoke replaces an existing Gist's content with a signed tombstone notice in-place.
+// The original VC file is renamed to {vc_id}_REVOKED.json and overwritten with the
+// tombstone JSON in a single PATCH call. The Gist URL never changes, so all external
+// references remain valid and now resolve to the revocation notice.
+func (g *GitHubGistBroadcaster) Revoke(gistID string, tombstone TombstonePayload) (remoteURL string, err error) {
+	if g.pat == "" {
+		return "", fmt.Errorf("GitHub PAT is not configured")
+	}
+
+	// Build the structured tombstone document
+	tombstoneDoc := map[string]interface{}{
+		"schema_version":   "0.1",
+		"type":             "VeriHashRevocation",
+		"vc_id":            tombstone.VCID,
+		"issuer_did":       tombstone.IssuerDID,
+		"revoked_at":       tombstone.RevokedAt,
+		"revoke_signature": tombstone.RevokeSignature,
+		"original_vc_hash": tombstone.OriginalVCHash,
+		"note":             "This credential has been revoked by its issuer. The original broadcast payload has been replaced with this tombstone.",
+	}
+	tombstoneBytes, err := json.MarshalIndent(tombstoneDoc, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal tombstone: %w", err)
+	}
+
+	// Derive original filename (must match what Publish used) then rename to _REVOKED
+	origFileName := strings.ReplaceAll(tombstone.VCID, ":", "_") + ".json"
+	newFileName := strings.ReplaceAll(tombstone.VCID, ":", "_") + "_REVOKED.json"
+
+	revokedDate := tombstone.RevokedAt
+	if len(revokedDate) >= 10 {
+		revokedDate = revokedDate[:10]
+	}
+	body := map[string]interface{}{
+		"description": "⚠️ REVOKED [" + revokedDate + "] — VeriHash Credential",
+		"files": map[string]interface{}{
+			// Renaming a file in Gist: use the old name as key, set "filename" to new name
+			origFileName: map[string]string{
+				"filename": newFileName,
+				"content":  string(tombstoneBytes),
+			},
+		},
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req, err := http.NewRequest("PATCH", githubAPIBase+"/gists/"+gistID, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("request build failed: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+g.pat)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GitHub API error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result struct {
+		HTMLURL string `json:"html_url"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("failed to parse GitHub PATCH response: %w", err)
+	}
+
+	log.Printf("[BROADCAST] Gist %s stamped with tombstone in-place", gistID)
+	return result.HTMLURL, nil
+}
+
+// Delete physically removes a Gist by its ID. Used only when clearing a broadcast
+// record without revoking the credential (e.g. the user manually deletes a broadcast
+// via DeleteBroadcastVC so they can re-publish from scratch).
+func (g *GitHubGistBroadcaster) Delete(gistID string) error {
 	if g.pat == "" {
 		return fmt.Errorf("GitHub PAT is not configured")
 	}
@@ -338,17 +583,31 @@ type ProfileIndexRevocation struct {
 	TombstoneGistURL string `json:"tombstone_gist_url"`
 }
 
+// ProfileInfo holds the optional public-facing identity fields set by the user.
+// All fields are opt-in — empty means the user chose not to publish them.
+type ProfileInfo struct {
+	Name    string            `json:"name,omitempty"`
+	Website string            `json:"website,omitempty"`
+	Custom  map[string]string `json:"custom,omitempty"`
+}
+
 // ProfileIndex is the public root index file (verihash_profile_index.json).
 // It is the single source of truth for external resolvers and the Ask VeriHash
-// query layer. Schema version 0.1.
+// query layer. Schema version 0.2.
 type ProfileIndex struct {
-	SchemaVersion string                   `json:"schema_version"`
-	DID           string                   `json:"did"`
-	DisplayName   string                   `json:"display_name"`
-	UpdatedAt     string                   `json:"updated_at"`
-	SkillSummary  []string                 `json:"skill_summary"`
-	RecentVCs     []ProfileIndexVC         `json:"recent_vcs"`
-	Revocations   []ProfileIndexRevocation `json:"revocations"`
+	SchemaVersion    string                   `json:"schema_version"`
+	DocumentType     string                   `json:"document_type"`
+	GeneratedBy      string                   `json:"generated_by"`
+	GeneratorVersion string                   `json:"generator_version"`
+	DID              string                   `json:"did"`
+	DisplayName      string                   `json:"display_name"`
+	Profile          ProfileInfo              `json:"profile"`
+	UpdatedAt        string                   `json:"updated_at"`
+	CredentialCount  int                      `json:"credential_count"`
+	RevocationCount  int                      `json:"revocation_count"`
+	SkillSummary     []string                 `json:"skill_summary"`
+	RecentVCs        []ProfileIndexVC         `json:"recent_vcs"`
+	Revocations      []ProfileIndexRevocation `json:"revocations"`
 }
 
 // GenerateProfileIndex builds the current ProfileIndex by joining session_credentials
@@ -377,11 +636,14 @@ func (db *VeriHashDB) GenerateProfileIndex(did string) (*ProfileIndex, error) {
 	defer rows.Close()
 
 	index := &ProfileIndex{
-		SchemaVersion: "0.1",
-		DID:           did,
-		UpdatedAt:     time.Now().UTC().Format(time.RFC3339),
-		RecentVCs:     []ProfileIndexVC{},
-		Revocations:   []ProfileIndexRevocation{},
+		SchemaVersion:    "0.2",
+		DocumentType:     "VeriHashPublicRootIndex",
+		GeneratedBy:      "VeriHash Nexus",
+		GeneratorVersion: "0.3",
+		DID:              did,
+		UpdatedAt:        time.Now().UTC().Format(time.RFC3339),
+		RecentVCs:        []ProfileIndexVC{},
+		Revocations:      []ProfileIndexRevocation{},
 	}
 
 	skillSet := make(map[string]struct{})
@@ -402,13 +664,29 @@ func (db *VeriHashDB) GenerateProfileIndex(did string) (*ProfileIndex, error) {
 			}
 		}
 
-		// Derive a title from the first sentence of AI insight (≤80 chars)
-		title := projectCtx
+		// Derive a public-safe title — NEVER expose projectCtx because it may
+		// contain full file system paths (e.g. "D:\Google\My Drive\...").
+		// Priority: AI insight first sentence → first skill tag → generic label.
+		title := ""
 		if aiInsight != "" {
 			first := strings.SplitN(aiInsight, ".", 2)[0]
+			first = strings.TrimSpace(first)
 			if len(first) > 0 && len(first) <= 120 {
-				title = strings.TrimSpace(first)
+				title = first
 			}
+		}
+		if title == "" {
+			// Fallback: use the first skill tag as a semantic label
+			for _, tag := range strings.Split(skillTagsStr, ",") {
+				tag = strings.TrimSpace(tag)
+				if tag != "" {
+					title = tag
+					break
+				}
+			}
+		}
+		if title == "" {
+			title = "VeriHash Credential"
 		}
 
 		issuedAt := time.Unix(int64(ts), 0).UTC().Format(time.RFC3339)
@@ -437,5 +715,326 @@ func (db *VeriHashDB) GenerateProfileIndex(did string) (*ProfileIndex, error) {
 		index.SkillSummary = append(index.SkillSummary, tag)
 	}
 
+	// Populate counts
+	index.CredentialCount = len(index.RecentVCs)
+	index.RevocationCount = len(index.Revocations)
+
 	return index, nil
+}
+
+// ── Index Gist helpers (Phase 4.5) ───────────────────────────────────────────
+
+const indexFileName = "verihash_profile_index.json"
+
+// CreateIndexGist publishes a brand-new public Gist containing the ProfileIndex.
+// This is the Bootstrap step — called exactly once when index_gist_id is empty.
+// The returned gistID must be persisted to verihash_config.json by the caller.
+func (g *GitHubGistBroadcaster) CreateIndexGist(index *ProfileIndex) (gistID, gistURL string, err error) {
+	if g.pat == "" {
+		return "", "", fmt.Errorf("GitHub PAT is not configured")
+	}
+	content, err := json.MarshalIndent(index, "", "  ")
+	if err != nil {
+		return "", "", fmt.Errorf("failed to marshal index: %w", err)
+	}
+	body := map[string]interface{}{
+		"description": "VeriHash Public Root Index — " + index.DID[:min(24, len(index.DID))],
+		"public":      true,
+		"files": map[string]interface{}{
+			indexFileName: map[string]string{"content": string(content)},
+		},
+	}
+	bodyBytes, _ := json.Marshal(body)
+	req, err := http.NewRequest("POST", githubAPIBase+"/gists", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", "", fmt.Errorf("request build failed: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+g.pat)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated {
+		return "", "", fmt.Errorf("GitHub API error %d: %s", resp.StatusCode, string(respBody))
+	}
+	var result struct {
+		ID      string `json:"id"`
+		HTMLURL string `json:"html_url"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", "", fmt.Errorf("failed to parse response: %w", err)
+	}
+	log.Printf("[INDEX] Bootstrap: created root index Gist %s", result.ID)
+	return result.ID, result.HTMLURL, nil
+}
+
+// PatchIndexGist updates the existing root index Gist in-place with fresh content.
+// The Gist ID and URL never change — only the file content is overwritten.
+// Returns notFound=true when the Gist has been deleted on GitHub so the caller
+// can transparently fall back to CreateIndexGist (same pattern as VC Gist 404).
+func (g *GitHubGistBroadcaster) PatchIndexGist(gistID string, index *ProfileIndex) (gistURL string, notFound bool, err error) {
+	if g.pat == "" {
+		return "", false, fmt.Errorf("GitHub PAT is not configured")
+	}
+	content, err := json.MarshalIndent(index, "", "  ")
+	if err != nil {
+		return "", false, fmt.Errorf("failed to marshal index: %w", err)
+	}
+	body := map[string]interface{}{
+		"description": "VeriHash Public Root Index — updated " + index.UpdatedAt[:10],
+		"files": map[string]interface{}{
+			indexFileName: map[string]string{"content": string(content)},
+		},
+	}
+	bodyBytes, _ := json.Marshal(body)
+	req, err := http.NewRequest("PATCH", githubAPIBase+"/gists/"+gistID, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", false, fmt.Errorf("request build failed: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+g.pat)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return "", false, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		// Index Gist was deleted on GitHub — caller should re-bootstrap
+		return "", true, fmt.Errorf("index Gist %s not found (deleted externally)", gistID)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", false, fmt.Errorf("GitHub API error %d: %s", resp.StatusCode, string(respBody))
+	}
+	var result struct {
+		HTMLURL string `json:"html_url"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", false, fmt.Errorf("failed to parse response: %w", err)
+	}
+	log.Printf("[INDEX] Root index Gist %s updated in-place", gistID)
+	return result.HTMLURL, false, nil
+}
+
+// ── IndexUpdater (Phase 4.5 auto-sync worker) ────────────────────────────────
+
+// IndexUpdater is a serialized, debounced background worker that keeps the
+// public root index Gist in sync after every Mint and Revoke operation.
+//
+// Design:
+//   - A buffered channel of size 1 acts as a "dirty flag". Any number of
+//     concurrent callers can Signal() without blocking. Duplicate signals
+//     within the debounce window are collapsed into a single update.
+//   - A mutex prevents two updates from running in parallel (safety net).
+//   - Bootstrap logic: if index_gist_id is absent from config, CreateIndexGist
+//     is called once and the returned ID is persisted immediately.
+type IndexUpdater struct {
+	ch          chan struct{}
+	mu          sync.Mutex
+	db          *VeriHashDB
+	broadcaster *GitHubGistBroadcaster
+	cfgPath     string // path to verihash_config.json for persisting index_gist_id
+	cancel      context.CancelFunc // cancels the Run goroutine
+}
+
+// NewIndexUpdater constructs an IndexUpdater ready to be started with Start().
+func NewIndexUpdater(db *VeriHashDB, broadcaster *GitHubGistBroadcaster, cfgPath string) *IndexUpdater {
+	return &IndexUpdater{
+		ch:          make(chan struct{}, 1),
+		db:          db,
+		broadcaster: broadcaster,
+		cfgPath:     cfgPath,
+	}
+}
+
+// Start launches the background event loop in its own goroutine.
+// It is idempotent — calling Start() on an already-running IndexUpdater is a no-op.
+func (iu *IndexUpdater) Start() {
+	iu.mu.Lock()
+	defer iu.mu.Unlock()
+	if iu.cancel != nil {
+		return // already running
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	iu.cancel = cancel
+	go iu.Run(ctx)
+}
+
+// Stop signals the background goroutine to exit and waits for cleanup.
+// After Stop() returns, it is safe to replace the DB file on Windows.
+func (iu *IndexUpdater) Stop() {
+	iu.mu.Lock()
+	cancel := iu.cancel
+	iu.cancel = nil
+	iu.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// UpdateBroadcaster swaps the broadcaster (e.g. when the PAT changes at runtime).
+func (iu *IndexUpdater) UpdateBroadcaster(b *GitHubGistBroadcaster) {
+	iu.mu.Lock()
+	defer iu.mu.Unlock()
+	iu.broadcaster = b
+}
+
+// Signal enqueues an index update request. It never blocks — if an update is
+// already queued, the duplicate signal is silently dropped (debounce).
+func (iu *IndexUpdater) Signal() {
+	select {
+	case iu.ch <- struct{}{}:
+	default: // already queued — drop duplicate
+	}
+}
+
+// Run starts the background event loop. It blocks until ctx is cancelled and
+// should be launched in its own goroutine at startup.
+func (iu *IndexUpdater) Run(ctx context.Context) {
+	const debounce = 4 * time.Second // wait for burst of rapid Mints to settle
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-iu.ch:
+			// Debounce: absorb any additional signals that arrive while we wait
+			timer := time.NewTimer(debounce)
+		drain:
+			for {
+				select {
+				case <-iu.ch:
+					// reset debounce window
+					if !timer.Stop() {
+						<-timer.C
+					}
+					timer.Reset(debounce)
+				case <-timer.C:
+					break drain
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				}
+			}
+			// Serialize: only one update at a time
+			iu.mu.Lock()
+			iu.doUpdate()
+			iu.mu.Unlock()
+		}
+	}
+}
+
+// doUpdate performs the actual index sync. Must be called with mu held.
+func (iu *IndexUpdater) doUpdate() {
+	// Read current config to get DID, display_name, and index_gist_id
+	cfgBytes, err := os.ReadFile(iu.cfgPath)
+	if err != nil {
+		log.Printf("[INDEX] Cannot read config: %v", err)
+		return
+	}
+	var cfg Config
+	if err := json.Unmarshal(cfgBytes, &cfg); err != nil {
+		log.Printf("[INDEX] Cannot parse config: %v", err)
+		return
+	}
+
+	// Derive the DID from the broadcaster's perspective via the config
+	// (DID is stored in node_identity.json; we read it here for the index)
+	did := cfg.IndexGistID // will be overwritten below if empty — we need the DID separately
+	_ = did
+
+	// Read the DID from node_identity.json
+	var identity struct {
+		DID string `json:"did"`
+	}
+	if idBytes, err := os.ReadFile("node_identity.json"); err == nil {
+		json.Unmarshal(idBytes, &identity)
+	}
+	if identity.DID == "" {
+		log.Printf("[INDEX] DID not available yet — skipping index update")
+		return
+	}
+
+	// Build fresh index snapshot from DB
+	index, err := iu.db.GenerateProfileIndex(identity.DID)
+	if err != nil {
+		log.Printf("[INDEX] Failed to generate index: %v", err)
+		return
+	}
+	// Inject optional public profile fields from config
+	index.Profile = ProfileInfo{
+		Name:    cfg.ProfileName,
+		Website: cfg.ProfileWebsite,
+		Custom:  cfg.ProfileCustom,
+	}
+	// display_name is derived from profile.name when set; falls back to legacy DisplayName field
+	if cfg.ProfileName != "" {
+		index.DisplayName = cfg.ProfileName
+	} else {
+		index.DisplayName = cfg.DisplayName
+	}
+
+	var gistID, gistURL string
+
+	if cfg.IndexGistID == "" {
+		// ── Bootstrap: first time, create the Gist ──────────────────────────
+		gistID, gistURL, err = iu.broadcaster.CreateIndexGist(index)
+		if err != nil {
+			log.Printf("[INDEX] Bootstrap failed: %v", err)
+			return
+		}
+		// Persist the new Gist ID and URL so subsequent runs use PATCH
+		cfg.IndexGistID = gistID
+		cfg.IndexGistURL = gistURL
+		if out, merr := json.MarshalIndent(cfg, "", "  "); merr == nil {
+			os.WriteFile(iu.cfgPath, out, 0644)
+		}
+		log.Printf("[INDEX] \u2713 Bootstrap complete. Root index pinned at %s", gistURL)
+	} else {
+		// ── Normal update: PATCH the existing Gist in-place ─────────────────
+		gistURL, notFound, err := iu.broadcaster.PatchIndexGist(cfg.IndexGistID, index)
+		if err != nil {
+			if notFound {
+				// Index Gist was deleted externally — clear stale ID and re-bootstrap
+				log.Printf("[INDEX] Stale index_gist_id %s (Gist deleted) — clearing and re-bootstrapping", cfg.IndexGistID)
+				cfg.IndexGistID = ""
+				cfg.IndexGistURL = ""
+				if out, merr := json.MarshalIndent(cfg, "", "  "); merr == nil {
+					os.WriteFile(iu.cfgPath, out, 0644)
+				}
+				// Re-bootstrap with a fresh Gist
+				newID, newURL, createErr := iu.broadcaster.CreateIndexGist(index)
+				if createErr != nil {
+					log.Printf("[INDEX] Re-bootstrap failed: %v", createErr)
+					return
+				}
+				cfg.IndexGistID = newID
+				cfg.IndexGistURL = newURL
+				if out, merr := json.MarshalIndent(cfg, "", "  "); merr == nil {
+					os.WriteFile(iu.cfgPath, out, 0644)
+				}
+				log.Printf("[INDEX] \u2713 Re-bootstrap complete. New root index at %s", newURL)
+			} else {
+				log.Printf("[INDEX] PATCH failed: %v", err)
+			}
+			return
+		}
+		// Update the stored URL (should be unchanged, but persist defensively)
+		if gistURL != cfg.IndexGistURL && gistURL != "" {
+			cfg.IndexGistURL = gistURL
+			if out, merr := json.MarshalIndent(cfg, "", "  "); merr == nil {
+				os.WriteFile(iu.cfgPath, out, 0644)
+			}
+		}
+		log.Printf("[INDEX] \u2713 Root index updated at %s (%d VCs, %d revocations)",
+			gistURL, len(index.RecentVCs), len(index.Revocations))
+	}
 }

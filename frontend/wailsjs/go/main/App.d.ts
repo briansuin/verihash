@@ -4,13 +4,13 @@ import {main} from '../models';
 
 export function BroadcastVC(arg1:string):Promise<string>;
 
+export function DeleteBroadcastVC(arg1:string,arg2:string):Promise<string>;
+
 export function ExportCredentialJSON(arg1:string):Promise<string>;
 
 export function ExportIdentityBundle():Promise<string>;
 
 export function ExportSanitizedJSON(arg1:string):Promise<string>;
-
-export function ExportVHBBackup(arg1:string,arg2:string):Promise<string>;
 
 export function GenerateHTMLReport(arg1:string,arg2:string):Promise<string>;
 
@@ -26,6 +26,8 @@ export function GetMnemonic():Promise<string>;
 
 export function GetProfileIndex():Promise<string>;
 
+export function GetProfileInfo():Promise<string>;
+
 export function GetWalletStatus():Promise<string>;
 
 export function GetWorkspaceFiles(arg1:string):Promise<Array<string>>;
@@ -33,8 +35,6 @@ export function GetWorkspaceFiles(arg1:string):Promise<Array<string>>;
 export function ImportIdentityBundle(arg1:string,arg2:string):Promise<string>;
 
 export function ImportMnemonic(arg1:string,arg2:string,arg3:string):Promise<string>;
-
-export function ImportVHBBackup(arg1:string):Promise<string>;
 
 export function InitWallet(arg1:string,arg2:string):Promise<string>;
 
@@ -48,6 +48,8 @@ export function LockVault():Promise<string>;
 
 export function MigrateWallet(arg1:string,arg2:string):Promise<string>;
 
+export function ResetBroadcastVC(arg1:string,arg2:string):Promise<string>;
+
 export function ResolveDroppedPath(arg1:string):Promise<string>;
 
 export function RestoreDataFromSync():Promise<string>;
@@ -55,6 +57,8 @@ export function RestoreDataFromSync():Promise<string>;
 export function RevokeCredential(arg1:string):Promise<string>;
 
 export function SaveConfig(arg1:Array<string>,arg2:string,arg3:string,arg4:string,arg5:string,arg6:Array<string>,arg7:string):Promise<string>;
+
+export function SaveProfileInfo(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function SaveSessionIgnores(arg1:string,arg2:Array<string>):Promise<string>;
 
@@ -64,11 +68,9 @@ export function SelectDirectory():Promise<string>;
 
 export function StartWatchdog():Promise<string>;
 
-export function SyncHistoricLedger(arg1:string):Promise<string>;
-
 export function ToggleAutoStart(arg1:boolean):Promise<void>;
 
-export function TriggerMint(arg1:Array<string>,arg2:string):Promise<string>;
+export function TriggerMint(arg1:Array<string>,arg2:string,arg3:string):Promise<string>;
 
 export function UnlockWallet(arg1:string):Promise<string>;
 

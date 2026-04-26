@@ -6,6 +6,10 @@ export function BroadcastVC(arg1) {
   return window['go']['main']['App']['BroadcastVC'](arg1);
 }
 
+export function DeleteBroadcastVC(arg1, arg2) {
+  return window['go']['main']['App']['DeleteBroadcastVC'](arg1, arg2);
+}
+
 export function ExportCredentialJSON(arg1) {
   return window['go']['main']['App']['ExportCredentialJSON'](arg1);
 }
@@ -16,10 +20,6 @@ export function ExportIdentityBundle() {
 
 export function ExportSanitizedJSON(arg1) {
   return window['go']['main']['App']['ExportSanitizedJSON'](arg1);
-}
-
-export function ExportVHBBackup(arg1, arg2) {
-  return window['go']['main']['App']['ExportVHBBackup'](arg1, arg2);
 }
 
 export function GenerateHTMLReport(arg1, arg2) {
@@ -50,6 +50,10 @@ export function GetProfileIndex() {
   return window['go']['main']['App']['GetProfileIndex']();
 }
 
+export function GetProfileInfo() {
+  return window['go']['main']['App']['GetProfileInfo']();
+}
+
 export function GetWalletStatus() {
   return window['go']['main']['App']['GetWalletStatus']();
 }
@@ -64,10 +68,6 @@ export function ImportIdentityBundle(arg1, arg2) {
 
 export function ImportMnemonic(arg1, arg2, arg3) {
   return window['go']['main']['App']['ImportMnemonic'](arg1, arg2, arg3);
-}
-
-export function ImportVHBBackup(arg1) {
-  return window['go']['main']['App']['ImportVHBBackup'](arg1);
 }
 
 export function InitWallet(arg1, arg2) {
@@ -94,6 +94,10 @@ export function MigrateWallet(arg1, arg2) {
   return window['go']['main']['App']['MigrateWallet'](arg1, arg2);
 }
 
+export function ResetBroadcastVC(arg1, arg2) {
+  return window['go']['main']['App']['ResetBroadcastVC'](arg1, arg2);
+}
+
 export function ResolveDroppedPath(arg1) {
   return window['go']['main']['App']['ResolveDroppedPath'](arg1);
 }
@@ -108,6 +112,10 @@ export function RevokeCredential(arg1) {
 
 export function SaveConfig(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
   return window['go']['main']['App']['SaveConfig'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+}
+
+export function SaveProfileInfo(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SaveProfileInfo'](arg1, arg2, arg3);
 }
 
 export function SaveSessionIgnores(arg1, arg2) {
@@ -126,16 +134,12 @@ export function StartWatchdog() {
   return window['go']['main']['App']['StartWatchdog']();
 }
 
-export function SyncHistoricLedger(arg1) {
-  return window['go']['main']['App']['SyncHistoricLedger'](arg1);
-}
-
 export function ToggleAutoStart(arg1) {
   return window['go']['main']['App']['ToggleAutoStart'](arg1);
 }
 
-export function TriggerMint(arg1, arg2) {
-  return window['go']['main']['App']['TriggerMint'](arg1, arg2);
+export function TriggerMint(arg1, arg2, arg3) {
+  return window['go']['main']['App']['TriggerMint'](arg1, arg2, arg3);
 }
 
 export function UnlockWallet(arg1) {

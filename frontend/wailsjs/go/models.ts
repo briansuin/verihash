@@ -45,6 +45,12 @@ export namespace main {
 	    ignored_patterns: string[];
 	    session_ignores: Record<string, Array<string>>;
 	    github_pat: string;
+	    index_gist_id: string;
+	    index_gist_url: string;
+	    display_name: string;
+	    profile_name: string;
+	    profile_website: string;
+	    profile_custom: Record<string, string>;
 	
 	    static createFrom(source: any = {}) {
 	        return new Config(source);
@@ -62,6 +68,12 @@ export namespace main {
 	        this.ignored_patterns = source["ignored_patterns"];
 	        this.session_ignores = source["session_ignores"];
 	        this.github_pat = source["github_pat"];
+	        this.index_gist_id = source["index_gist_id"];
+	        this.index_gist_url = source["index_gist_url"];
+	        this.display_name = source["display_name"];
+	        this.profile_name = source["profile_name"];
+	        this.profile_website = source["profile_website"];
+	        this.profile_custom = source["profile_custom"];
 	    }
 	}
 	export class LedgerEntry {

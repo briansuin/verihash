@@ -1,4 +1,4 @@
-import { SelectDirectory, SaveConfig, StartWatchdog, TriggerMint, GetDID, LoadConfig, GetWorkspaceFiles, GetLedger, ExportCredentialJSON, ExportSanitizedJSON, RestoreDataFromSync, GenerateHTMLReport, RevokeCredential, VerifyChain, VerifyCredential, ExportIdentityBundle, ImportIdentityBundle, SaveToFile, GetWalletStatus, UnlockWallet, InitWallet, MigrateWallet, GetMnemonic, LockVault, ToggleAutoStart, IsAutoStartEnabled, ImportMnemonic, SyncHistoricLedger, UpdateIgnoredPatterns, SaveSessionIgnores, ResolveDroppedPath, BroadcastVC, GetBroadcastStatus, GetProfileIndex, ExportVHBBackup, ImportVHBBackup } from '../wailsjs/go/main/App';
+import { SelectDirectory, SaveConfig, StartWatchdog, TriggerMint, GetDID, LoadConfig, GetWorkspaceFiles, GetLedger, ExportCredentialJSON, ExportSanitizedJSON, RestoreDataFromSync, GenerateHTMLReport, RevokeCredential, VerifyChain, VerifyCredential, ExportIdentityBundle, ImportIdentityBundle, SaveToFile, GetWalletStatus, UnlockWallet, InitWallet, MigrateWallet, GetMnemonic, LockVault, ToggleAutoStart, IsAutoStartEnabled, ImportMnemonic, UpdateIgnoredPatterns, SaveSessionIgnores, ResolveDroppedPath, BroadcastVC, GetBroadcastStatus, ResetBroadcastVC, DeleteBroadcastVC, GetProfileIndex, GetProfileInfo, SaveProfileInfo } from '../wailsjs/go/main/App';
 import { EventsOn, WindowGetSize, WindowSetSize, OnFileDrop } from '../wailsjs/runtime/runtime';
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -158,6 +158,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const btnExportJson = document.getElementById('btn-export-json');
     const btnRevokeCredential = document.getElementById('btn-revoke-credential');
     const revokeStatus = document.getElementById('revoke-status');
+    const btnBroadcastGist = document.getElementById('btn-broadcast-gist');
+    const broadcastStatus = document.getElementById('broadcast-status');
     // Chain status bar elements
     const chainStatusBar = document.getElementById('chain-status-bar');
     const chainStatusIcon = document.getElementById('chain-status-icon');
@@ -402,8 +404,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 renderSyncDirs();
                 syncConfig();
             }
-            // Kick off historic repair in background (fire-and-forget)
-            SyncHistoricLedger(dir).catch(e => console.error('[CLOUD-SYNC] Historic sync error:', e));
+            // DB snapshot will be synced to the new dir by Go backend on next mint/revoke
+            // No historic repair needed — the entire DB is synced as verihash_ledger.db
         });
     }
 
@@ -429,7 +431,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 ignoredPatterns.splice(i, 1);
                 await UpdateIgnoredPatterns(ignoredPatterns);
                 renderIgnorePatterns();
-                if (activeWorkspace) await renderFileTree(activeWorkspace);
+                if (activeWorkspaces.size > 0) await renderFileTree([...activeWorkspaces][0]);
             });
             ignorePatternsContainer.appendChild(tag);
         });
@@ -443,7 +445,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 inputIgnorePattern.value = '';
                 await UpdateIgnoredPatterns(ignoredPatterns);
                 renderIgnorePatterns();
-                if (activeWorkspace) await renderFileTree(activeWorkspace);
+                if (activeWorkspaces.size > 0) await renderFileTree([...activeWorkspaces][0]);
             }
         };
         btnAddIgnore.addEventListener('click', addPattern);
@@ -486,7 +488,116 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
+    // ======== PUBLIC PROFILE MECHANICS ========
+
+    // In-memory state for custom key-value fields
+    let profileCustomFields = {}; // { key: value, ... }
+
+    function renderProfileCustomFields() {
+        const container = document.getElementById('profile-custom-fields');
+        const empty = document.getElementById('profile-custom-empty');
+        if (!container) return;
+        container.innerHTML = '';
+        const keys = Object.keys(profileCustomFields);
+        if (empty) empty.style.display = keys.length === 0 ? 'block' : 'none';
+        keys.forEach(key => {
+            const row = document.createElement('div');
+            row.style.cssText = 'display: flex; gap: 6px; align-items: center;';
+            row.innerHTML = `
+                <input type="text" class="profile-custom-key" value="${key}"
+                    placeholder="key (e.g. email)"
+                    style="flex: 0.4; padding: 5px 8px; font-size: 0.75rem; background: rgba(0,0,0,0.3); border: 1px solid rgba(0,255,204,0.25); color: var(--primary); outline: none; font-family: var(--font-mono);">
+                <input type="text" class="profile-custom-val" value="${profileCustomFields[key]}"
+                    placeholder="value"
+                    style="flex: 1; padding: 5px 8px; font-size: 0.75rem; background: rgba(0,0,0,0.3); border: 1px solid rgba(0,255,204,0.25); color: var(--primary); outline: none; font-family: var(--font-mono);">
+                <button class="cyber-btn sm profile-custom-remove" data-key="${key}"
+                    style="font-size: 0.6rem; padding: 2px 6px; border-color: rgba(255,80,80,0.4); color: rgba(255,100,100,0.8); flex-shrink:0;">[ ✕ ]</button>
+            `;
+            // Live update on change
+            row.querySelector('.profile-custom-key').addEventListener('change', (e) => {
+                const newKey = e.target.value.trim();
+                if (!newKey || newKey === key) return;
+                const val = profileCustomFields[key];
+                delete profileCustomFields[key];
+                profileCustomFields[newKey] = val;
+                renderProfileCustomFields();
+            });
+            row.querySelector('.profile-custom-val').addEventListener('change', (e) => {
+                profileCustomFields[key] = e.target.value.trim();
+            });
+            row.querySelector('.profile-custom-remove').addEventListener('click', () => {
+                delete profileCustomFields[key];
+                renderProfileCustomFields();
+            });
+            container.appendChild(row);
+        });
+    }
+
+    const btnAddProfileField = document.getElementById('btn-add-profile-field');
+    if (btnAddProfileField) {
+        btnAddProfileField.addEventListener('click', () => {
+            // Generate a unique placeholder key
+            let newKey = 'field_' + (Object.keys(profileCustomFields).length + 1);
+            while (profileCustomFields[newKey] !== undefined) newKey += '_new';
+            profileCustomFields[newKey] = '';
+            renderProfileCustomFields();
+            // Focus the newly added key input
+            const container = document.getElementById('profile-custom-fields');
+            if (container) {
+                const inputs = container.querySelectorAll('.profile-custom-key');
+                if (inputs.length > 0) inputs[inputs.length - 1].focus();
+            }
+        });
+    }
+
+    const btnSaveProfile = document.getElementById('btn-save-profile');
+    if (btnSaveProfile) {
+        btnSaveProfile.addEventListener('click', async () => {
+            const nameEl = document.getElementById('profile-name');
+            const websiteEl = document.getElementById('profile-website');
+            const feedback = document.getElementById('profile-save-feedback');
+            const name = nameEl ? nameEl.value.trim() : '';
+            const website = websiteEl ? websiteEl.value.trim() : '';
+
+            // Collect live values from rendered rows before saving
+            const container = document.getElementById('profile-custom-fields');
+            if (container) {
+                const rows = container.querySelectorAll('div');
+                rows.forEach(row => {
+                    const keyEl = row.querySelector('.profile-custom-key');
+                    const valEl = row.querySelector('.profile-custom-val');
+                    if (keyEl && valEl) {
+                        const k = keyEl.value.trim();
+                        const v = valEl.value.trim();
+                        if (k) profileCustomFields[k] = v;
+                    }
+                });
+            }
+
+            btnSaveProfile.disabled = true;
+            btnSaveProfile.innerText = '[ SAVING... ]';
+            try {
+                const customJSON = JSON.stringify(profileCustomFields);
+                const result = JSON.parse(await SaveProfileInfo(name, website, customJSON));
+                if (result.error) {
+                    if (feedback) { feedback.innerText = '✗ ' + result.error; feedback.style.color = '#ff6666'; }
+                } else {
+                    if (feedback) { feedback.innerText = '✓ Profile saved. Index Gist will update shortly.'; feedback.style.color = '#00ffcc'; }
+                    setTimeout(() => { if (feedback) feedback.innerText = ''; }, 4000);
+                }
+            } catch (e) {
+                if (feedback) { feedback.innerText = '✗ Error: ' + e; feedback.style.color = '#ff6666'; }
+            } finally {
+                btnSaveProfile.disabled = false;
+                btnSaveProfile.innerText = '[ SAVE PROFILE ]';
+            }
+        });
+    }
+
+    // (Profile loading is handled inside openIdentityModal below)
+
     // M/D Workspace Mechanics — Ctrl+click, Shift+click, single-click (Windows style)
+
     function renderWorkspaces() {
         workspaceStack.innerHTML = '';
         workspaces.forEach((ws, idx) => {
@@ -550,13 +661,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
+    const actionFooter = document.getElementById('action-footer');
+    const inputProjectName = document.getElementById('input-project-name');
+
     async function updateView() {
         if (activeWorkspaces.size === 0) {
             telemetryPanel.style.display = 'block';
             workspaceView.style.display = 'none';
+            if (actionFooter) actionFooter.style.display = 'none';
+            if (inputProjectName) inputProjectName.value = ''; // clear on deselect
         } else {
             telemetryPanel.style.display = 'none';
             workspaceView.style.display = 'block';
+            if (actionFooter) actionFooter.style.display = 'flex';
             const wsArray = [...activeWorkspaces];
             if (wsArray.length === 1) {
                 activeWorkspaceName.innerText = wsArray[0].split(/[\/\\]/).pop();
@@ -608,6 +725,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             if (totalFiles === 0) {
                 fileTreeContainer.innerHTML = '<div style="color:#888; font-size:0.8rem;">No files found in selected workspaces.</div>';
+            }
+
+            // Always populate the filter tree using the primary (first) workspace
+            // The filter/session-ignore system is per-workspace and uses the first selected ws
+            if (wsArray.length > 0) {
+                await renderFileTree(wsArray[0]);
             }
         } catch (e) {
             fileTreeContainer.innerHTML = `<div class="err">Error loading tree: ${e}</div>`;
@@ -982,6 +1105,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         const mintingWsArray = [...activeWorkspaces];
         const workspacePathParam = mintingWsArray.join('|');
         const contextLabel = mintingWsArray.map(p => p.split(/[\/\\]/).pop()).join(' + ');
+        // Read optional user-supplied project name
+        const projectNameVal = (inputProjectName ? inputProjectName.value.trim() : '') || '';
 
         try {
             activeWorkspaces.clear();
@@ -989,7 +1114,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             updateView();
             appendLog(`\n[ORACLE] Forging Cross-Project Credential [${contextLabel}] with ${selectedFiles.length} file(s)...`, 'sys');
 
-            const resultJSON = await TriggerMint(selectedFiles, workspacePathParam);
+            const resultJSON = await TriggerMint(selectedFiles, workspacePathParam, projectNameVal);
             try {
                 const vc = JSON.parse(resultJSON);
                 if (vc.error) {
@@ -1084,7 +1209,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (workspaces.length === 0) return;
             if (!confirm('Clear all workspace bindings?')) return;
             workspaces = [];
-            activeWorkspace = null;
+            activeWorkspaces.clear();
             syncConfig();
             renderWorkspaces();
             updateView();
@@ -1172,6 +1297,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (exportStatus) { exportStatus.className = 'modal-status'; exportStatus.innerText = ''; }
         if (importStatus) { importStatus.className = 'modal-status'; importStatus.innerText = ''; }
         identityModal.classList.add('open');
+        // Load public profile fields each time modal opens
+        GetProfileInfo().then(raw => {
+            try {
+                const info = JSON.parse(raw);
+                const nameEl = document.getElementById('profile-name');
+                const websiteEl = document.getElementById('profile-website');
+                if (nameEl) nameEl.value = info.name || '';
+                if (websiteEl) websiteEl.value = info.website || '';
+                profileCustomFields = info.custom || {};
+                renderProfileCustomFields();
+                const linkBadge = document.getElementById('profile-index-link-badge');
+                const linkEl = document.getElementById('profile-index-link');
+                if (info.index_gist_url && linkBadge && linkEl) {
+                    linkEl.href = info.index_gist_url;
+                    linkBadge.style.display = 'inline';
+                }
+            } catch (e) { console.warn('Profile load error:', e); }
+        }).catch(e => console.warn('GetProfileInfo error:', e));
     }
     function closeIdentityModal() {
         identityModal.classList.remove('open');
@@ -1304,7 +1447,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     // ======== LEDGER RENDERING ========
     async function renderLedger() {
         ledgerContainer.innerHTML = '<div style="color:#888; font-size:0.8rem; padding:20px 0;">Querying credential archive...</div>';
+        const viewportLayer = document.querySelector('#view-ledger .viewport-layer');
+        if (viewportLayer) viewportLayer.style.display = '';
         credentialDrawer.style.display = 'none';
+        credentialDrawer.style.flex = '';
+        credentialDrawer.style.minHeight = '';
         activeVcId = null;
         // Kick off chain verification in parallel
         renderChainStatus();
@@ -1422,14 +1569,250 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         drawerFilePaths.innerHTML = manifestHTML;
 
+        // Reset broadcast button & status to loading state
+        if (btnBroadcastGist) {
+            btnBroadcastGist.disabled = true;
+            btnBroadcastGist.innerText = '[ ⏳ CHECKING... ]';
+            btnBroadcastGist.style.opacity = '0.5';
+        }
+        if (broadcastStatus) { broadcastStatus.style.display = 'none'; }
+        // Clear verify-sig result when switching credentials
+        const verifySigEl = document.getElementById('verify-sig-status');
+        if (verifySigEl) { verifySigEl.style.display = 'none'; verifySigEl.innerText = ''; }
+
+        // Collapse the ledger list viewport so drawer gets full panel height
+        const viewportLayer = document.querySelector('#view-ledger .viewport-layer');
+        if (viewportLayer) viewportLayer.style.display = 'none';
+        credentialDrawer.style.cssText = credentialDrawer.style.cssText + '; flex: 1; min-height: 0;';
+        credentialDrawer.style.flex = '1';
+        credentialDrawer.style.minHeight = '0';
         credentialDrawer.style.display = 'flex';
+
+        // Async check: has this VC already been successfully broadcast to gist?
+        GetBroadcastStatus(entry.vc_id).then(pubs => {
+            if (!btnBroadcastGist) return;
+            const gistPub = (pubs || []).find(p => p.channel === 'gist');
+            if (gistPub && gistPub.status === 'success') {
+                // Already published — lock the button
+                btnBroadcastGist.disabled = true;
+                btnBroadcastGist.innerText = '[ ✅ GIST PUBLISHED ]';
+                btnBroadcastGist.style.opacity = '0.55';
+                btnBroadcastGist.style.cursor = 'not-allowed';
+                if (broadcastStatus) {
+                    broadcastStatus.style.display = 'block';
+                    broadcastStatus.style.background = 'rgba(0,255,204,0.06)';
+                    broadcastStatus.style.color = 'rgba(0,255,204,0.8)';
+                    broadcastStatus.style.border = '1px solid rgba(0,255,204,0.2)';
+                    broadcastStatus.innerHTML = `✅ Published · <a href="${gistPub.remote_url}" style="color:#00ffcc;" target="_blank">${gistPub.remote_url}</a>
+                        &nbsp;<span id="btn-rebroadcast-link" style="cursor:pointer; color:rgba(0,200,255,0.7); font-size:0.62rem; border-bottom:1px dotted rgba(0,200,255,0.4);" title="Update Gist content in-place (or create new if deleted)">🔄 Re-broadcast</span>
+                        &nbsp;<span id="btn-delgist-link" style="cursor:pointer; color:rgba(255,80,80,0.75); font-size:0.62rem; border-bottom:1px dotted rgba(255,80,80,0.35);" title="Delete this Gist from GitHub. The local credential stays valid.">✕ Del-Gist</span>`;
+                    document.getElementById('btn-rebroadcast-link')?.addEventListener('click', async () => {
+                        if (!confirm('Re-broadcast this credential to GitHub Gist?\n\n• If the Gist still exists → content will be updated in-place (same URL)\n• If the Gist was deleted → a new Gist will be created')) return;
+                        await ResetBroadcastVC(entry.vc_id, 'gist');
+                        btnBroadcastGist.disabled = false;
+                        btnBroadcastGist.innerText = '[ 📡 BROADCAST GIST ]';
+                        btnBroadcastGist.style.opacity = '1';
+                        btnBroadcastGist.style.cursor = 'pointer';
+                        broadcastStatus.style.display = 'none';
+                    });
+                    document.getElementById('btn-delgist-link')?.addEventListener('click', async () => {
+                        if (!confirm('Delete this Gist from GitHub?\n\nThe local credential will remain valid. You can re-broadcast a fresh Gist afterwards.')) return;
+                        const delResult = JSON.parse(await DeleteBroadcastVC(entry.vc_id, 'gist'));
+                        if (delResult.error) {
+                            broadcastStatus.innerHTML = `✕ Delete failed: ${delResult.error}`;
+                            broadcastStatus.style.color = 'var(--warning)';
+                        } else {
+                            btnBroadcastGist.disabled = false;
+                            btnBroadcastGist.innerText = '[ 📡 BROADCAST GIST ]';
+                            btnBroadcastGist.style.opacity = '1';
+                            btnBroadcastGist.style.cursor = 'pointer';
+                            broadcastStatus.style.display = 'none';
+                        }
+                    });
+                }
+            } else if (gistPub && (gistPub.status === 'pending' || gistPub.status === 'publishing')) {
+                // In-flight
+                btnBroadcastGist.disabled = true;
+                btnBroadcastGist.innerText = '[ 📡 BROADCASTING... ]';
+                btnBroadcastGist.style.opacity = '0.6';
+            } else {
+                // Not yet broadcast (or previously failed) — enable
+                btnBroadcastGist.disabled = false;
+                btnBroadcastGist.innerText = '[ 📡 BROADCAST GIST ]';
+                btnBroadcastGist.style.opacity = '1';
+                btnBroadcastGist.style.cursor = 'pointer';
+            }
+        }).catch(() => {
+            // On error, allow the user to try
+            if (btnBroadcastGist) {
+                btnBroadcastGist.disabled = false;
+                btnBroadcastGist.innerText = '[ 📡 BROADCAST GIST ]';
+                btnBroadcastGist.style.opacity = '1';
+            }
+        });
     }
 
     btnCloseDrawer.addEventListener('click', () => {
+        const viewportLayer = document.querySelector('#view-ledger .viewport-layer');
+        if (viewportLayer) viewportLayer.style.display = '';
         credentialDrawer.style.display = 'none';
+        credentialDrawer.style.flex = '';
+        credentialDrawer.style.minHeight = '';
         document.querySelectorAll('.ledger-entry').forEach(r => r.classList.remove('selected'));
         activeVcId = null;
     });
+
+    // ======== BROADCAST GIST ========
+    if (btnBroadcastGist) {
+        btnBroadcastGist.addEventListener('click', async () => {
+            if (!activeVcId) return;
+
+            // Double-check server state before sending — prevents race conditions
+            btnBroadcastGist.disabled = true;
+            btnBroadcastGist.innerText = '[ ⏳ CHECKING... ]';
+            if (broadcastStatus) broadcastStatus.style.display = 'none';
+
+            try {
+                const pubs = await GetBroadcastStatus(activeVcId);
+                const gistPub = (pubs || []).find(p => p.channel === 'gist');
+
+                if (gistPub && gistPub.status === 'success') {
+                    // Already published — block and show link with re-broadcast option
+                    btnBroadcastGist.innerText = '[ ✅ GIST PUBLISHED ]';
+                    btnBroadcastGist.style.opacity = '0.55';
+                    btnBroadcastGist.style.cursor = 'not-allowed';
+                    if (broadcastStatus) {
+                        broadcastStatus.style.display = 'block';
+                        broadcastStatus.style.background = 'rgba(0,255,204,0.06)';
+                        broadcastStatus.style.color = 'rgba(0,255,204,0.8)';
+                        broadcastStatus.style.border = '1px solid rgba(0,255,204,0.2)';
+                        broadcastStatus.innerHTML = `✅ Published · <a href="${gistPub.remote_url}" style="color:#00ffcc;" target="_blank">${gistPub.remote_url}</a>
+                            &nbsp;<span id="btn-rebroadcast-link" style="cursor:pointer; color:rgba(0,200,255,0.7); font-size:0.62rem; border-bottom:1px dotted rgba(0,200,255,0.4);" title="Update Gist content in-place (or create new if deleted)">🔄 Re-broadcast</span>
+                            &nbsp;<span id="btn-delgist-link" style="cursor:pointer; color:rgba(255,80,80,0.75); font-size:0.62rem; border-bottom:1px dotted rgba(255,80,80,0.35);" title="Delete this Gist from GitHub. The local credential stays valid.">✕ Del-Gist</span>`;
+                        document.getElementById('btn-rebroadcast-link')?.addEventListener('click', async () => {
+                            if (!confirm('Re-broadcast this credential to GitHub Gist?\n\n• If the Gist still exists → content will be updated in-place (same URL)\n• If the Gist was deleted → a new Gist will be created')) return;
+                            await ResetBroadcastVC(activeVcId, 'gist');
+                            btnBroadcastGist.disabled = false;
+                            btnBroadcastGist.innerText = '[ 📡 BROADCAST GIST ]';
+                            btnBroadcastGist.style.opacity = '1';
+                            btnBroadcastGist.style.cursor = 'pointer';
+                            broadcastStatus.style.display = 'none';
+                        });
+                        document.getElementById('btn-delgist-link')?.addEventListener('click', async () => {
+                            if (!confirm('Delete this Gist from GitHub?\n\nThe local credential will remain valid. You can re-broadcast a fresh Gist afterwards.')) return;
+                            const delResult = JSON.parse(await DeleteBroadcastVC(activeVcId, 'gist'));
+                            if (delResult.error) {
+                                broadcastStatus.innerHTML = `✕ Delete failed: ${delResult.error}`;
+                                broadcastStatus.style.color = 'var(--warning)';
+                            } else {
+                                btnBroadcastGist.disabled = false;
+                                btnBroadcastGist.innerText = '[ 📡 BROADCAST GIST ]';
+                                btnBroadcastGist.style.opacity = '1';
+                                btnBroadcastGist.style.cursor = 'pointer';
+                                broadcastStatus.style.display = 'none';
+                            }
+                        });
+                    }
+                    return;
+                }
+
+                // Safe to broadcast
+                btnBroadcastGist.innerText = '[ 📡 BROADCASTING... ]';
+                btnBroadcastGist.style.opacity = '0.7';
+                const result = JSON.parse(await BroadcastVC(activeVcId));
+                if (result.error) {
+                    // Show error and re-enable for retry
+                    if (broadcastStatus) {
+                        broadcastStatus.style.display = 'block';
+                        broadcastStatus.style.background = 'rgba(255,85,0,0.08)';
+                        broadcastStatus.style.color = 'var(--warning)';
+                        broadcastStatus.style.border = '1px solid rgba(255,85,0,0.4)';
+                        broadcastStatus.innerText = '✕ ' + result.error;
+                    }
+                    btnBroadcastGist.disabled = false;
+                    btnBroadcastGist.innerText = '[ 📡 BROADCAST GIST ]';
+                    btnBroadcastGist.style.opacity = '1';
+                } else {
+                    // Queued — show in-flight state and start polling for completion
+                    const polledVcId = activeVcId; // capture before drawer might close
+                    btnBroadcastGist.innerText = '[ 📡 BROADCASTING... ]';
+                    btnBroadcastGist.style.opacity = '0.6';
+                    if (broadcastStatus) {
+                        broadcastStatus.style.display = 'block';
+                        broadcastStatus.style.background = 'rgba(0,180,255,0.06)';
+                        broadcastStatus.style.color = 'rgba(0,200,255,0.85)';
+                        broadcastStatus.style.border = '1px solid rgba(0,180,255,0.25)';
+                        broadcastStatus.innerText = '📡 Broadcast queued — waiting for GitHub response...';
+                    }
+
+                    // Poll every 3 s, up to 20 attempts (~1 min), for the backend goroutine to finish
+                    let pollCount = 0;
+                    const pollInterval = setInterval(async () => {
+                        pollCount++;
+                        try {
+                            const pubs = await GetBroadcastStatus(polledVcId);
+                            const gistPub = (pubs || []).find(p => p.channel === 'gist');
+                            if (!gistPub) return; // not written yet, keep waiting
+
+                            if (gistPub.status === 'success') {
+                                clearInterval(pollInterval);
+                                // Only update UI if the same VC is still open
+                                if (activeVcId === polledVcId && btnBroadcastGist) {
+                                    btnBroadcastGist.disabled = true;
+                                    btnBroadcastGist.innerText = '[ ✅ GIST PUBLISHED ]';
+                                    btnBroadcastGist.style.opacity = '0.55';
+                                    btnBroadcastGist.style.cursor = 'not-allowed';
+                                }
+                                if (broadcastStatus && activeVcId === polledVcId) {
+                                    broadcastStatus.style.background = 'rgba(0,255,204,0.06)';
+                                    broadcastStatus.style.color = 'rgba(0,255,204,0.8)';
+                                    broadcastStatus.style.border = '1px solid rgba(0,255,204,0.2)';
+                                    broadcastStatus.innerHTML = `✅ Published to GitHub Gist · <a href="${gistPub.remote_url}" style="color:#00ffcc;" target="_blank">${gistPub.remote_url}</a>`;
+                                }
+                                // Refresh ledger badge too
+                                const badgeContainerId = 'badges-' + polledVcId.replace(/[^a-z0-9]/gi, '_');
+                                const badgeEl = document.getElementById(badgeContainerId);
+                                if (badgeEl) {
+                                    badgeEl.innerHTML = '';
+                                    const badge = document.createElement('span');
+                                    badge.style.cssText = 'font-size: 0.58rem; padding: 1px 5px; border-radius: 3px; background: rgba(0,0,0,0.4); border: 1px solid rgba(0,255,204,0.2); color: #00ffcc88; cursor: pointer; white-space: nowrap;';
+                                    badge.title = `GIST: success\n${gistPub.remote_url}`;
+                                    badge.innerText = `✅ GIST`;
+                                    badge.addEventListener('click', (e) => { e.stopPropagation(); window.open(gistPub.remote_url, '_blank'); });
+                                    badgeEl.appendChild(badge);
+                                }
+                            } else if (gistPub.status === 'failed' || pollCount >= 20) {
+                                clearInterval(pollInterval);
+                                if (activeVcId === polledVcId && btnBroadcastGist) {
+                                    btnBroadcastGist.disabled = false;
+                                    btnBroadcastGist.innerText = '[ 📡 BROADCAST GIST ]';
+                                    btnBroadcastGist.style.opacity = '1';
+                                    btnBroadcastGist.style.cursor = 'pointer';
+                                }
+                                if (broadcastStatus && activeVcId === polledVcId) {
+                                    const errMsg = gistPub.last_error || (pollCount >= 20 ? 'Timed out — check console for details' : 'Unknown error');
+                                    broadcastStatus.style.background = 'rgba(255,85,0,0.08)';
+                                    broadcastStatus.style.color = 'var(--warning)';
+                                    broadcastStatus.style.border = '1px solid rgba(255,85,0,0.4)';
+                                    broadcastStatus.innerText = '✕ Broadcast failed: ' + errMsg;
+                                }
+                            }
+                        } catch (_) { /* network hiccup — keep polling */ }
+                    }, 3000);
+                }
+            } catch (e) {
+                if (broadcastStatus) {
+                    broadcastStatus.style.display = 'block';
+                    broadcastStatus.style.color = 'var(--warning)';
+                    broadcastStatus.innerText = '✕ Error: ' + e;
+                }
+                btnBroadcastGist.disabled = false;
+                btnBroadcastGist.innerText = '[ 📡 BROADCAST GIST ]';
+                btnBroadcastGist.style.opacity = '1';
+            }
+        });
+    }
+
 
     // ======== JSON EXPORT ========
     btnExportJson.addEventListener('click', async () => {
@@ -1450,31 +1833,40 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // ======== RESTORE FROM SYNC ========
     const btnRestoreHistory = document.getElementById('btn-restore-history');
+    const cloudRestoreStatus = document.getElementById('cloud-restore-status');
     if (btnRestoreHistory) {
         btnRestoreHistory.addEventListener('click', async () => {
-            btnRestoreHistory.innerText = '[ SCANNING... ]';
+            btnRestoreHistory.innerText = '[ ⟳ SCANNING CLOUD... ]';
             btnRestoreHistory.disabled = true;
+            if (cloudRestoreStatus) cloudRestoreStatus.innerText = '';
             try {
                 const resJSON = await RestoreDataFromSync();
                 const res = JSON.parse(resJSON);
                 if (res.error) {
-                    alert('Restoration error: ' + res.error);
-                } else if (res.degraded) {
-                    alert(`\u26A0 RECOVERY DEGRADED\n\nFound: ${res.found} blocks\nRecovered: ${res.restored} records.\n\nWARNING: The system detected multiple disjointed chains and spliced them together via Strict Mode topological rescue. Your cryptographic continuity may be interrupted at the splice points!`);
-                    if (viewLedger.style.display !== 'none') {
-                        renderLedger();
+                    if (cloudRestoreStatus) {
+                        cloudRestoreStatus.innerText = '✕ ' + res.error;
+                        cloudRestoreStatus.style.color = '#ff6666';
+                    } else {
+                        alert('Restoration error: ' + res.error);
                     }
                 } else {
-                    alert(`Data Reconstruction Complete!\n\nFound: ${res.found} blocks\nRestored: ${res.restored} new records.\nChain verified perfectly intact.`);
-                    // Refresh current view if we're in the ledger
-                    if (viewLedger.style.display !== 'none') {
-                        renderLedger();
+                    const msg = `✓ Restored ${res.credentials} credentials from ${res.source}. Please restart the app to reload.`;
+                    if (cloudRestoreStatus) {
+                        cloudRestoreStatus.innerText = msg;
+                        cloudRestoreStatus.style.color = '#00ffcc';
+                    } else {
+                        alert(msg);
                     }
                 }
             } catch (e) {
-                alert('Connection failure during restore: ' + e);
+                if (cloudRestoreStatus) {
+                    cloudRestoreStatus.innerText = '✕ Error: ' + e;
+                    cloudRestoreStatus.style.color = '#ff6666';
+                } else {
+                    alert('Connection failure during restore: ' + e);
+                }
             } finally {
-                btnRestoreHistory.innerText = '[ RESTORE ]';
+                btnRestoreHistory.innerText = '[ ☁ RESTORE FROM CLOUD SYNC ]';
                 btnRestoreHistory.disabled = false;
             }
         });
@@ -1581,7 +1973,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 revokeStatus.innerText = '\u2713 Credential revoked. Refreshing ledger...';
 
                 setTimeout(() => {
+                    const viewportLayer = document.querySelector('#view-ledger .viewport-layer');
+                    if (viewportLayer) viewportLayer.style.display = '';
                     credentialDrawer.style.display = 'none';
+                    credentialDrawer.style.flex = '';
+                    credentialDrawer.style.minHeight = '';
                     revokeStatus.style.display = 'none';
                     activeVcId = null;
                     renderLedger();
@@ -1743,112 +2139,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             } finally {
                 btnRestoreMnemonic.innerHTML = '\u26A0 \u00a0RESTORE NODE IDENTITY';
                 btnRestoreMnemonic.disabled = false;
-            }
-        });
-    }
-
-    // ======== .vhb COLD BACKUP — EXPORT ========
-    const btnVHBExport = document.getElementById('btn-vhb-export');
-    if (btnVHBExport) {
-        btnVHBExport.addEventListener('click', async () => {
-            const pwd = document.getElementById('vhb-export-pwd').value;
-            const confirm = document.getElementById('vhb-export-pwd-confirm').value;
-            const statusEl = document.getElementById('vhb-export-status');
-            statusEl.className = 'modal-status';
-            statusEl.innerText = '';
-
-            if (!pwd) {
-                statusEl.className = 'modal-status err';
-                statusEl.innerText = '\u2715 Please enter a backup password.';
-                return;
-            }
-            if (pwd.length < 6) {
-                statusEl.className = 'modal-status err';
-                statusEl.innerText = '\u2715 Backup password must be at least 6 characters.';
-                return;
-            }
-            if (pwd !== confirm) {
-                statusEl.className = 'modal-status err';
-                statusEl.innerText = '\u2715 Passwords do not match.';
-                return;
-            }
-
-            btnVHBExport.innerText = '[ ENCRYPTING... ]';
-            btnVHBExport.disabled = true;
-            statusEl.innerText = '\u23f3 Building encrypted archive (Argon2id KDF — this may take ~3s)...';
-
-            try {
-                const resultJSON = await ExportVHBBackup(pwd, confirm);
-                const result = JSON.parse(resultJSON);
-                if (result.error) {
-                    statusEl.className = 'modal-status err';
-                    statusEl.innerText = '\u2715 ' + result.error;
-                } else {
-                    statusEl.className = 'modal-status ok';
-                    statusEl.innerHTML = `\u2713 Cold backup created!<br><span style="color:#aaa; font-size:0.68rem; word-break:break-all;">${result.path}</span>`;
-                    document.getElementById('vhb-export-pwd').value = '';
-                    document.getElementById('vhb-export-pwd-confirm').value = '';
-                }
-            } catch (e) {
-                statusEl.className = 'modal-status err';
-                statusEl.innerText = '\u2715 ' + e;
-            } finally {
-                btnVHBExport.innerText = '\u2744 \u00a0CREATE COLD BACKUP';
-                btnVHBExport.disabled = false;
-            }
-        });
-    }
-
-    // ======== .vhb COLD BACKUP — IMPORT ========
-    const btnVHBImport = document.getElementById('btn-vhb-import');
-    if (btnVHBImport) {
-        btnVHBImport.addEventListener('click', async () => {
-            const pwd = document.getElementById('vhb-import-pwd').value;
-            const statusEl = document.getElementById('vhb-import-status');
-            statusEl.className = 'modal-status';
-            statusEl.innerText = '';
-
-            if (!pwd) {
-                statusEl.className = 'modal-status err';
-                statusEl.innerText = '\u2715 Please enter the backup password.';
-                return;
-            }
-
-            const confirmed = confirm(
-                '\u26A0 WARNING: This will REPLACE your current credential ledger with the backup.\n' +
-                'A .bak copy of your current database will be created.\n\n' +
-                'Your private key will NOT be restored — you will need to re-enter your\n' +
-                '12-word recovery phrase after the app restarts.\n\n' +
-                'Continue?'
-            );
-            if (!confirmed) return;
-
-            btnVHBImport.innerText = '[ DECRYPTING... ]';
-            btnVHBImport.disabled = true;
-            statusEl.innerText = '\u23f3 Decrypting and restoring backup...';
-
-            try {
-                const resultJSON = await ImportVHBBackup(pwd);
-                const result = JSON.parse(resultJSON);
-                if (result.error) {
-                    statusEl.className = 'modal-status err';
-                    statusEl.innerText = '\u2715 ' + result.error;
-                } else {
-                    statusEl.className = 'modal-status ok';
-                    statusEl.innerHTML =
-                        `\u2713 Ledger restored! ${result.credentials} credential(s) recovered.<br>` +
-                        `<span style="color:#aaa; font-size:0.68rem;">DID: ${result.did}</span><br>` +
-                        `<span style="color:#ffaa00; font-size:0.68rem;">\u26A0 Restart VeriHash and enter your recovery phrase to rebuild your identity key.</span>`;
-                    document.getElementById('vhb-import-pwd').value = '';
-                    // Auto-reload after 4s so the user can read the message
-                    setTimeout(() => location.reload(), 4000);
-                }
-            } catch (e) {
-                statusEl.className = 'modal-status err';
-                statusEl.innerText = '\u2715 ' + e;
-            } finally {
-                btnVHBImport.innerText = '\u267b \u00a0SELECT .vhb \u0026 RESTORE';
-                btnVHBImport.disabled = false;
             }
         });
     }
