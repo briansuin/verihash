@@ -516,8 +516,10 @@ func (a *App) TriggerMint(selectedFiles []string, workspacePath string, projectN
 	// If the user supplied a project name, use it directly as the mint context.
 	// Otherwise fall back to deriving the context from workspace basenames.
 	var mintContext string
+	var publicTitle string
 	if strings.TrimSpace(projectName) != "" {
-		mintContext = strings.TrimSpace(projectName)
+		publicTitle = strings.TrimSpace(projectName)
+		mintContext = publicTitle
 	} else {
 		wsPaths := strings.Split(workspacePath, "|")
 		if len(wsPaths) > 1 {
@@ -534,7 +536,7 @@ func (a *App) TriggerMint(selectedFiles []string, workspacePath string, projectN
 		}
 	}
 
-	result := MintCredential(a.ctx, a.db, a.pubKey, a.privKey, engineParam, a.apiKey, a.baseURL, selectedFiles, mintContext)
+	result := MintCredential(a.ctx, a.db, a.pubKey, a.privKey, engineParam, a.apiKey, a.baseURL, selectedFiles, mintContext, publicTitle)
 
 
 	// If successful, trigger cloud sync and broadcast
@@ -770,6 +772,7 @@ func (a *App) RestoreDataFromSync() string {
 	}
 	a.db = newDB
 
+
 	// ── Step 4: Restart IndexUpdater with the new DB handle ──
 	cfg := a.LoadConfig()
 	if cfg.GitHubPAT != "" {
@@ -897,127 +900,7 @@ func (a *App) SaveToFile(defaultFilename, content string) string {
 	return `{"saved": true, "path": "` + strings.ReplaceAll(path, `\`, `\\`) + `"}`
 }
 
-// IdentityBundle is the portable identity package for cross-machine migration
-type IdentityBundle struct {
-	PrivateKeyHex string `json:"private_key_hex"`
-	PublicKey     string `json:"public_key"`
-	DID           string `json:"did"`
-	CreatedAt     string `json:"created_at"`
-	ExportedAt    string `json:"exported_at"`
-	Note          string `json:"note"`
-}
 
-// ExportIdentityBundle encrypts the private key with the current vault password
-// and returns an AES-256-GCM encrypted bundle JSON.
-func (a *App) ExportIdentityBundle() string {
-	if a.walletIsLocked() {
-		return `{"error": "Wallet is locked. Please unlock your vault before exporting."}`
-	}
-
-	// Retrieve current password from OS Keyring
-	password, err := keyring.Get("VeriHash", "vault_password")
-	if err != nil || password == "" {
-		return `{"error": "Could not retrieve vault password from secure storage. Please re-enter your password to unlock."}`
-	}
-
-	privHex, err := os.ReadFile(privateKeyFile)
-	if err != nil {
-		return `{"error": "Cannot read private key file. File may not exist."}`
-	}
-	identityBytes, err := os.ReadFile(identityFile)
-	if err != nil {
-		return `{"error": "Cannot read identity file."}`
-	}
-	var identity NodeIdentity
-	if err := json.Unmarshal(identityBytes, &identity); err != nil {
-		return `{"error": "Identity file is corrupted."}`
-	}
-
-	inner := IdentityBundle{
-		PrivateKeyHex: string(privHex),
-		PublicKey:     identity.PublicKey,
-		DID:           pubKeyToDIDKey(a.pubKey),
-		CreatedAt:     identity.CreatedAt,
-		ExportedAt:    time.Now().Format(time.RFC3339),
-		Note:          "VeriHash Identity Bundle — Keep this file safe and NEVER share it.",
-	}
-	innerJSON, err := json.Marshal(inner)
-	if err != nil {
-		return `{"error": "Failed to serialize identity bundle."}`
-	}
-
-	// Encrypt with Argon2id + AES-256-GCM
-	encryptedJSON, err := encryptBundleData(innerJSON, password, pubKeyToDIDKey(a.pubKey))
-	if err != nil {
-		return `{"error": "Encryption failed: ` + err.Error() + `"}`
-	}
-	return string(encryptedJSON)
-}
-
-// ImportIdentityBundle decrypts an encrypted identity bundle and restores the private key.
-// The same backup password used during export is required to decrypt.
-func (a *App) ImportIdentityBundle(jsonContent, password string) string {
-	if password == "" {
-		return `{"error": "Bundle password is required to import."}`
-	}
-
-	// 1. Decrypt the bundle
-	plaintext, err := decryptBundleData([]byte(jsonContent), password)
-	if err != nil {
-		return `{"error": "` + err.Error() + `"}`
-	}
-
-	// 2. Parse the inner IdentityBundle
-	var bundle IdentityBundle
-	if err := json.Unmarshal(plaintext, &bundle); err != nil {
-		return `{"error": "Decrypted data is not a valid identity bundle."}`
-	}
-	if bundle.PrivateKeyHex == "" {
-		return `{"error": "Bundle is missing private key data."}`
-	}
-
-	// 3. Validate private key integrity
-	privBytes, err := hex.DecodeString(bundle.PrivateKeyHex)
-	if err != nil || len(privBytes) != ed25519.PrivateKeySize {
-		return `{"error": "Bundle private key is invalid or corrupted."}`
-	}
-	privKey := ed25519.PrivateKey(privBytes)
-	pubKey := privKey.Public().(ed25519.PublicKey)
-	derived := pubKeyToDIDKey(pubKey)
-	// Accept both legacy hex format and new base58btc format for backward compat
-	if bundle.DID != "" && bundle.DID != derived {
-		// Re-derive with legacy format for backward compat
-		legacy := "did:key:ed25519:" + hex.EncodeToString(pubKey)
-		if bundle.DID != legacy {
-			return `{"error": "Bundle integrity check FAILED: private key does not match the DID."}`
-		}
-	}
-
-	// 4. Backup existing keys before overwriting
-	if _, err := os.Stat(privateKeyFile); err == nil {
-		os.Rename(privateKeyFile, privateKeyFile+".bak")
-	}
-	if _, err := os.Stat(identityFile); err == nil {
-		os.Rename(identityFile, identityFile+".bak")
-	}
-
-	// 5. Write new keys
-	if err := os.WriteFile(privateKeyFile, []byte(bundle.PrivateKeyHex), 0600); err != nil {
-		return fmt.Sprintf(`{"error": "Failed to write private key: %v"}`, err)
-	}
-	pubHex := hex.EncodeToString(pubKey)
-	newIdentity := NodeIdentity{
-		PublicKey: pubHex,
-		DID:       derived,
-		CreatedAt: bundle.CreatedAt,
-	}
-	newIdentityBytes, _ := json.MarshalIndent(newIdentity, "", "  ")
-	if err := os.WriteFile(identityFile, newIdentityBytes, 0644); err != nil {
-		return fmt.Sprintf(`{"error": "Failed to write identity file: %v"}`, err)
-	}
-
-	return `{"status": "OK", "did": "` + derived + `"}`
-}
 
 // ImportMnemonic decrypts the BIP39 mathematical seed to restore an identity.
 // The new identity is then locally encrypted using the provided newPassword.

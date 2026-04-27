@@ -11,8 +11,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     function showWalletScreen(screenId, subtitle) {
         walletOverlay.style.display = 'flex';
         walletSubtitle.innerText = subtitle;
-        ['wallet-screen-unlock', 'wallet-screen-init', 'wallet-screen-migrate', 'wallet-screen-mnemonic'].forEach(id => {
-            document.getElementById(id).style.display = (id === screenId) ? 'block' : 'none';
+        ['wallet-screen-unlock', 'wallet-screen-init', 'wallet-screen-migrate', 'wallet-screen-mnemonic', 'wallet-screen-restore'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.style.display = (id === screenId) ? 'block' : 'none';
         });
     }
     function hideWalletOverlay() {
@@ -93,6 +94,48 @@ document.addEventListener('DOMContentLoaded', async () => {
             }));
             pwd.focus();
         });
+
+        const btnShowRestore = document.getElementById('btn-show-restore');
+        const btnBackToNew = document.getElementById('btn-back-to-new');
+        if (btnShowRestore) btnShowRestore.addEventListener('click', () => showWalletScreen('wallet-screen-restore', 'RESTORE FROM RECOVERY PHRASE'));
+        if (btnBackToNew) btnBackToNew.addEventListener('click', () => showWalletScreen('wallet-screen-mnemonic', 'SEED RECOVERY PHRASE'));
+
+        const btnRestoreInit = document.getElementById('btn-wallet-restore');
+        if (btnRestoreInit) {
+            btnRestoreInit.addEventListener('click', async () => {
+                const mnemonicRaw = document.getElementById('wallet-restore-mnemonic').value;
+                const mnemonic = mnemonicRaw.trim().replace(/\s+/g, ' ').toLowerCase();
+                const pwd = document.getElementById('wallet-restore-pwd').value;
+                const confirm = document.getElementById('wallet-restore-pwd-confirm').value;
+                const status = document.getElementById('wallet-restore-status');
+                
+                status.className = 'wallet-status err';
+                if (!mnemonic) { status.innerText = '\u2715 Please enter recovery phrase'; return; }
+                if (pwd.length < 8) { status.innerText = '\u2715 Password must be at least 8 chars'; return; }
+                if (pwd !== confirm) { status.innerText = '\u2715 Passwords do not match'; return; }
+                
+                btnRestoreInit.disabled = true;
+                status.className = 'wallet-status';
+                status.innerText = 'Restoring identity...';
+                try {
+                    const resultJSON = await ImportMnemonic(mnemonic, pwd, confirm);
+                    const result = JSON.parse(resultJSON);
+                    if (result.error) {
+                        status.className = 'wallet-status err';
+                        status.innerText = '\u2715 ' + result.error;
+                    } else {
+                        status.className = 'wallet-status ok';
+                        status.innerText = '\u2713 Identity Restored! Restarting node...';
+                        setTimeout(() => location.reload(), 1500);
+                    }
+                } catch (e) {
+                    status.className = 'wallet-status err';
+                    status.innerText = '\u2715 Error: ' + e;
+                } finally {
+                    btnRestoreInit.disabled = false;
+                }
+            });
+        }
     } else if (walletState === 'plaintext') {
         showWalletScreen('wallet-screen-migrate', 'SECURITY UPGRADE REQUIRED');
         const btn = document.getElementById('btn-wallet-migrate');
@@ -235,6 +278,33 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     } catch (e) { console.error("Boot error: ", e); }
 
+    const btnWorkspaceToggle = document.getElementById('btn-workspace-toggle');
+    const mainWorkspace = document.getElementById('main-workspace');
+    if (btnWorkspaceToggle) {
+        btnWorkspaceToggle.addEventListener('click', async () => {
+            const isHidden = mainWorkspace.style.display === 'none';
+            const sResizer = document.getElementById('sidebar-resizer');
+            try {
+                const size = await WindowGetSize();
+                if (isHidden) {
+                    mainWorkspace.style.display = '';
+                    if (sResizer) sResizer.style.display = '';
+                    document.body.classList.remove('mini-mode');
+                    btnWorkspaceToggle.innerText = '[ < ]';
+                    btnSidebarToggle.style.display = ''; // Show sidebar toggle
+                    WindowSetSize(1120, size.h);
+                } else {
+                    mainWorkspace.style.display = 'none';
+                    if (sResizer) sResizer.style.display = 'none';
+                    document.body.classList.add('mini-mode');
+                    btnWorkspaceToggle.innerText = '[ > ]';
+                    btnSidebarToggle.style.display = 'none'; // Hide sidebar toggle
+                    WindowSetSize(340, size.h);
+                }
+            } catch(e) { console.error(e); }
+        });
+    }
+
     // Visual Mechanics
     btnSidebarToggle.addEventListener('click', async () => {
         sidebar.classList.toggle('collapsed');
@@ -243,9 +313,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             const size = await WindowGetSize();
             if (isCollapsed) {
                 btnSidebarToggle.innerText = '[ < ]';
+                if (btnWorkspaceToggle) btnWorkspaceToggle.style.display = 'none'; // Hide workspace toggle
                 WindowSetSize(800, size.h);
             } else {
                 btnSidebarToggle.innerText = '[ > ]';
+                if (btnWorkspaceToggle) btnWorkspaceToggle.style.display = ''; // Show workspace toggle
                 WindowSetSize(1120, size.h);
             }
         } catch (err) { }
@@ -1550,12 +1622,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             try {
                 const vc = JSON.parse(entry.full_vc_json);
                 const files = vc?.credentialSubject?.proofOfWork?.files;
+                const fullPaths = vc?.localMetadata?.full_paths || [];
                 if (Array.isArray(files) && files.length > 0) {
-                    manifestHTML = files.map(f => {
+                    manifestHTML = files.map((f, i) => {
                         const datePart = f.fileDate
                             ? `<span style="color:#888; margin-left:8px; font-size:0.7rem;">(Modified: ${f.fileDate})</span>`
                             : '';
-                        return `<div>${f.name}${datePart}</div>`;
+                        const displayPath = fullPaths[i] ? fullPaths[i] : f.name;
+                        return `<div>${displayPath}${datePart}</div>`;
                     }).join('');
                 }
             } catch (_) { /* fall through to legacy path */ }
@@ -1565,7 +1639,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const paths = entry.file_paths
                 ? entry.file_paths.split(',').map(f => f.trim()).filter(Boolean)
                 : [];
-            manifestHTML = paths.map(p => `<div>${p.split(/[\/\\]/).pop()}</div>`).join('');
+            manifestHTML = paths.map(p => `<div>${p}</div>`).join('');
         }
         drawerFilePaths.innerHTML = manifestHTML;
 
@@ -2089,7 +2163,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const btnRestoreMnemonic = document.getElementById('btn-restore-mnemonic');
     if (btnRestoreMnemonic) {
         btnRestoreMnemonic.addEventListener('click', async () => {
-            const mnemonic = document.getElementById('mnemonic-input').value.trim();
+            const mnemonicRaw = document.getElementById('mnemonic-input').value;
+            const mnemonic = mnemonicRaw.trim().replace(/\s+/g, ' ').toLowerCase();
             const newPwd = document.getElementById('restore-pwd').value;
             const confirm = document.getElementById('restore-pwd-confirm').value;
             const statusEl = document.getElementById('restore-status');

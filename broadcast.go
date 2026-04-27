@@ -33,8 +33,9 @@ type BroadcastPayload struct {
 	AIInsight string   `json:"ai_insight"`
 	SkillTags []string `json:"skill_tags"`
 	VCHash    string   `json:"vc_hash"`
-	Signature string   `json:"proof_signature"`
-	AIEngine  string   `json:"ai_engine,omitempty"`
+	Signature   string   `json:"proof_signature"`
+	AIEngine    string   `json:"ai_engine,omitempty"`
+	PublicTitle string   `json:"public_title,omitempty"`
 }
 
 // TombstonePayload carries the data needed to publish an in-place revocation
@@ -92,8 +93,9 @@ func NewBroadcastPayload(db *VeriHashDB, vcID string) (*BroadcastPayload, error)
 		AIInsight: stripSkillTagsFromAI(pow.AIEvaluation), // strip tags section for legacy credentials
 		SkillTags: tags,
 		VCHash:    vcHash,
-		Signature: vc.Proof.ProofValue,
-		AIEngine:  pow.AIEngine,
+		Signature:   vc.Proof.ProofValue,
+		AIEngine:    pow.AIEngine,
+		PublicTitle: pow.PublicTitle,
 	}, nil
 }
 
@@ -344,12 +346,11 @@ func (g *GitHubGistBroadcaster) Publish(payload BroadcastPayload) (remoteID, rem
 
 	// Gist file name: safe filename derived from vc_id
 	fileName := strings.ReplaceAll(payload.VCID, ":", "_") + ".json"
-	// Description: skill tags + date — never project/file names (privacy)
-	descLabel := payload.IssuedAt[:10]
-	if len(payload.SkillTags) > 0 {
-		descLabel = payload.SkillTags[0] + " [" + payload.IssuedAt[:10] + "]"
+	// Description: use explicit PublicTitle; fallback to generic
+	description := payload.PublicTitle
+	if description == "" {
+		description = "VeriHash Credential"
 	}
-	description := "VeriHash VC — " + descLabel
 
 	body := map[string]interface{}{
 		"description": description,
@@ -623,7 +624,8 @@ func (db *VeriHashDB) GenerateProfileIndex(did string) (*ProfileIndex, error) {
 			sc.timestamp,
 			sc.status,
 			COALESCE(bp.remote_url, '') AS gist_url,
-			COALESCE(bp.status, '')     AS pub_status
+			COALESCE(bp.status, '')     AS pub_status,
+			sc.full_vc_json
 		FROM session_credentials sc
 		LEFT JOIN broadcast_publications bp
 			ON bp.vc_id = sc.vc_id AND bp.channel = 'gist'
@@ -649,10 +651,10 @@ func (db *VeriHashDB) GenerateProfileIndex(did string) (*ProfileIndex, error) {
 	skillSet := make(map[string]struct{})
 
 	for rows.Next() {
-		var vcID, projectCtx, aiInsight, skillTagsStr, gistURL, pubStatus string
+		var vcID, projectCtx, aiInsight, skillTagsStr, gistURL, pubStatus, fullVCJSON string
 		var ts float64
 		var credStatus int
-		if err := rows.Scan(&vcID, &projectCtx, &aiInsight, &skillTagsStr, &ts, &credStatus, &gistURL, &pubStatus); err != nil {
+		if err := rows.Scan(&vcID, &projectCtx, &aiInsight, &skillTagsStr, &ts, &credStatus, &gistURL, &pubStatus, &fullVCJSON); err != nil {
 			continue
 		}
 
@@ -664,27 +666,13 @@ func (db *VeriHashDB) GenerateProfileIndex(did string) (*ProfileIndex, error) {
 			}
 		}
 
-		// Derive a public-safe title — NEVER expose projectCtx because it may
-		// contain full file system paths (e.g. "D:\Google\My Drive\...").
-		// Priority: AI insight first sentence → first skill tag → generic label.
+		// Extract PublicTitle from full_vc_json if present
 		title := ""
-		if aiInsight != "" {
-			first := strings.SplitN(aiInsight, ".", 2)[0]
-			first = strings.TrimSpace(first)
-			if len(first) > 0 && len(first) <= 120 {
-				title = first
-			}
+		var parsedVC VCSchema
+		if jsonErr := json.Unmarshal([]byte(fullVCJSON), &parsedVC); jsonErr == nil {
+			title = parsedVC.CredentialSubject.ProofOfWork.PublicTitle
 		}
-		if title == "" {
-			// Fallback: use the first skill tag as a semantic label
-			for _, tag := range strings.Split(skillTagsStr, ",") {
-				tag = strings.TrimSpace(tag)
-				if tag != "" {
-					title = tag
-					break
-				}
-			}
-		}
+
 		if title == "" {
 			title = "VeriHash Credential"
 		}

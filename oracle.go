@@ -67,6 +67,7 @@ type ProofOfWork struct {
 	AIEvaluation    string         `json:"aiEvaluation"`
 	HashChainRoot   string         `json:"hashChainRoot"`
 	ProjectContext  string         `json:"projectContext,omitempty"`
+	PublicTitle     string         `json:"publicTitle,omitempty"`
 	SkillTags       string         `json:"skillTags,omitempty"`
 	UnixNanoMinting string         `json:"unixNanoMinting,omitempty"`
 }
@@ -114,7 +115,7 @@ type OllamaResponse struct {
 }
 
 // MintCredential orchestrates the AI evaluation and VC signing
-func MintCredential(ctx context.Context, db *VeriHashDB, pubKey ed25519.PublicKey, privKey ed25519.PrivateKey, engine, apiKey, baseURL string, selectedFilePaths []string, workspacePath string) string {
+func MintCredential(ctx context.Context, db *VeriHashDB, pubKey ed25519.PublicKey, privKey ed25519.PrivateKey, engine, apiKey, baseURL string, selectedFilePaths []string, workspacePath string, publicTitle string) string {
 	runtime.EventsEmit(ctx, "log", map[string]string{"msg": "[ORACLE] Initializing Scoped Minting Sequence...", "type": "sys"})
 
 	// 1. Fetch unminted snapshots explicitly restricted to client-selected files
@@ -390,6 +391,7 @@ FILE MANIFEST (each file listed with its physical OS modification date as a tamp
 				AIEvaluation:    cleanAIResult,
 				HashChainRoot:   latestHash,
 				ProjectContext:  workspacePath,
+				PublicTitle:     publicTitle,
 				SkillTags:       strings.Join(parsedTags, ", "),
 				UnixNanoMinting: fmt.Sprintf("%d", time.Now().UnixNano()),
 			},
