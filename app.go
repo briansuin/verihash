@@ -940,7 +940,10 @@ func (a *App) ImportMnemonic(mnemonic, newPassword, confirm string) string {
 	// Refresh Context & OS Keyring
 	keyring.Set("VeriHash", "vault_password", newPassword)
 
-	// Force the internal context to drop the running key and demand a restart, or just inject it.
+	a.privKey = privKey
+	a.pubKey = pubKey
+	a.walletStatus = WalletStatusEncrypted
+
 	// We'll return OK and let the frontend reboot.
 	return `{"status": "OK", "did": "` + pubKeyToDIDKey(pubKey) + `"}`
 }
