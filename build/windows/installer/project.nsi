@@ -76,7 +76,8 @@ InstallDir "$LOCALAPPDATA\${INFO_PRODUCTNAME}" # Default installing folder
 ShowInstDetails show # This will always show the installation details.
 
 Function .onInit
-   !insertmacro wails.checkArchitecture
+    nsExec::Exec 'taskkill /F /IM "${PRODUCT_EXECUTABLE}"'
+    !insertmacro wails.checkArchitecture
 FunctionEnd
 
 Section
@@ -108,6 +109,7 @@ Section
 SectionEnd
 
 Section "uninstall"
+    nsExec::Exec 'taskkill /F /IM "${PRODUCT_EXECUTABLE}"'
     !insertmacro wails.setShellContext
 
     RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
