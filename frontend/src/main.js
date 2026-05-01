@@ -1,4 +1,4 @@
-import { SelectDirectory, SaveConfig, StartWatchdog, TriggerMint, GetDID, LoadConfig, GetWorkspaceFiles, GetLedger, ExportCredentialJSON, ExportSanitizedJSON, RestoreDataFromSync, GenerateHTMLReport, RevokeCredential, VerifyChain, VerifyCredential, ExportIdentityBundle, ImportIdentityBundle, SaveToFile, GetWalletStatus, UnlockWallet, InitWallet, MigrateWallet, GetMnemonic, LockVault, ToggleAutoStart, IsAutoStartEnabled, ImportMnemonic, UpdateIgnoredPatterns, SaveSessionIgnores, ResolveDroppedPath, BroadcastVC, GetBroadcastStatus, ResetBroadcastVC, DeleteBroadcastVC, GetProfileIndex, GetProfileInfo, SaveProfileInfo } from '../wailsjs/go/main/App';
+import { SelectDirectory, SaveConfig, StartWatchdog, TriggerMint, GetDID, LoadConfig, GetWorkspaceFiles, GetLedger, ExportCredentialJSON, ExportSanitizedJSON, RestoreDataFromSync, GenerateHTMLReport, RevokeCredential, VerifyChain, VerifyCredential, SaveToFile, GetWalletStatus, UnlockWallet, InitWallet, MigrateWallet, GetMnemonic, LockVault, ToggleAutoStart, IsAutoStartEnabled, ImportMnemonic, UpdateIgnoredPatterns, SaveSessionIgnores, ResolveDroppedPath, BroadcastVC, GetBroadcastStatus, ResetBroadcastVC, DeleteBroadcastVC, GetProfileIndex, GetProfileInfo, SaveProfileInfo, GetAppVersion, CheckForUpdate, ApplyUpdate } from '../wailsjs/go/main/App';
 import { EventsOn, WindowGetSize, WindowSetSize, OnFileDrop } from '../wailsjs/runtime/runtime';
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -2214,6 +2214,78 @@ document.addEventListener('DOMContentLoaded', async () => {
             } finally {
                 btnRestoreMnemonic.innerHTML = '\u26A0 \u00a0RESTORE NODE IDENTITY';
                 btnRestoreMnemonic.disabled = false;
+            }
+        });
+    }
+
+    // ======== VERSION & UPDATE CHECK ========
+    let currentAppVersion = "0.0.0";
+    try {
+        currentAppVersion = await GetAppVersion();
+        const versionEl = document.getElementById('app-version-text');
+        if (versionEl) versionEl.innerText = 'VeriHash v' + currentAppVersion;
+    } catch (e) {
+        console.warn("Version detection failed:", e);
+    }
+
+    const btnCheckUpdate = document.getElementById('btn-check-update');
+    const updateStatus = document.getElementById('update-status');
+    if (btnCheckUpdate) {
+        btnCheckUpdate.addEventListener('click', async () => {
+            btnCheckUpdate.innerText = "[ Checking... ]";
+            btnCheckUpdate.disabled = true;
+            updateStatus.innerText = "";
+            updateStatus.style.color = "var(--primary)";
+            
+            try {
+                const resStr = await CheckForUpdate(currentAppVersion);
+                const res = JSON.parse(resStr);
+                
+                if (res.error) {
+                    updateStatus.style.color = "var(--warning)";
+                    updateStatus.innerText = "Error: " + res.error;
+                    btnCheckUpdate.innerText = "Check for Updates";
+                    btnCheckUpdate.disabled = false;
+                } else if (res.update_available) {
+                    updateStatus.style.color = "#00ffcc";
+                    updateStatus.innerText = "New version found: " + res.version + "!";
+                    btnCheckUpdate.innerText = "[ DOWNLOAD & UPDATE NOW ]";
+                    btnCheckUpdate.style.color = "#ffaa00";
+                    btnCheckUpdate.disabled = false;
+                    
+                    btnCheckUpdate.onclick = async () => {
+                        btnCheckUpdate.innerText = "[ Downloading... ]";
+                        btnCheckUpdate.disabled = true;
+                        updateStatus.innerText = "Updating... DO NOT CLOSE.";
+                        try {
+                            const upStr = await ApplyUpdate();
+                            const upRes = JSON.parse(upStr);
+                            if (upRes.status === "success") {
+                                updateStatus.innerText = "Update successful! Restarting in 3 seconds...";
+                                setTimeout(() => location.reload(), 3000);
+                            } else {
+                                updateStatus.style.color = "var(--warning)";
+                                updateStatus.innerText = "Update failed: " + upRes.error;
+                                btnCheckUpdate.innerText = "[ Retry Update ]";
+                                btnCheckUpdate.disabled = false;
+                            }
+                        } catch (e) {
+                            updateStatus.style.color = "var(--warning)";
+                            updateStatus.innerText = "Update exception: " + e;
+                            btnCheckUpdate.disabled = false;
+                        }
+                    };
+                } else {
+                    updateStatus.style.color = "#888";
+                    updateStatus.innerText = "You are on the latest version.";
+                    btnCheckUpdate.innerText = "Check for Updates";
+                    btnCheckUpdate.disabled = false;
+                }
+            } catch (e) {
+                updateStatus.style.color = "var(--warning)";
+                updateStatus.innerText = "Check failed: " + e;
+                btnCheckUpdate.innerText = "Check for Updates";
+                btnCheckUpdate.disabled = false;
             }
         });
     }

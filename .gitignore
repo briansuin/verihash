@@ -28,6 +28,7 @@ node_identity.json
 verihash_config.json
 verihash.db
 proof_of_work.db*
+verihash_ledger.db
 *.encrypted.json
 *.bak
 

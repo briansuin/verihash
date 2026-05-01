@@ -6,8 +6,12 @@
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
+  "info": {
+    "productName": "VeriHash",
+    "productVersion": "0.3.4"
+  },
   "author": {
-    "name": "runbor",
+    "name": "Brian Suin",
     "email": "runbo.sun@gmail.com"
   }
 }

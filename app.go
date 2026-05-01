@@ -11,10 +11,15 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	_ "embed"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"github.com/zalando/go-keyring"
+	"github.com/creativeprojects/go-selfupdate"
 )
+
+//go:embed wails.json
+var wailsJSON []byte
 
 // Config represents persistent application settings
 type Config struct {
@@ -1145,6 +1150,50 @@ func (a *App) SaveProfileInfo(name, website string, customJSON string) string {
 	log.Printf("[PROFILE] Public profile updated: name=%q website=%q custom_fields=%d",
 		existingCfg.ProfileName, existingCfg.ProfileWebsite, len(custom))
 	return `{"status": "saved"}`
+}
+
+// GetAppVersion returns the current application version dynamically from wails.json.
+func (a *App) GetAppVersion() string {
+	var config struct {
+		Info struct {
+			ProductVersion string `json:"productVersion"`
+		} `json:"info"`
+	}
+	if err := json.Unmarshal(wailsJSON, &config); err == nil {
+		if config.Info.ProductVersion != "" {
+			return config.Info.ProductVersion
+		}
+	}
+	return "0.0.0"
+}
+
+// CheckForUpdate queries GitHub for the latest release version.
+func (a *App) CheckForUpdate(currentVersion string) string {
+	latest, found, err := selfupdate.DetectLatest(context.Background(), selfupdate.ParseSlug("briansuin/verihash"))
+	if err != nil {
+		return `{"error": "Failed to check for updates: ` + strings.ReplaceAll(err.Error(), `"`, `'`) + `"}`
+	}
+	if !found {
+		return `{"update_available": false}`
+	}
+	// Compare versions
+	if latest.Version() == currentVersion || "v"+latest.Version() == currentVersion || latest.Version() == "v"+currentVersion {
+		return `{"update_available": false}`
+	}
+	return `{"update_available": true, "version": "` + latest.Version() + `", "release_notes": ""}`
+}
+
+// ApplyUpdate downloads the latest release from GitHub.
+func (a *App) ApplyUpdate() string {
+	latest, err := selfupdate.UpdateSelf(context.Background(), "0.0.0", selfupdate.ParseSlug("briansuin/verihash"))
+	if err != nil {
+		return `{"error": "Update failed: ` + strings.ReplaceAll(err.Error(), `"`, `'`) + `"}`
+	}
+	runtime.EventsEmit(a.ctx, "log", map[string]string{
+		"msg":  "[SYSTEM] Update successfully applied: " + latest.Version(),
+		"type": "sys",
+	})
+	return `{"status": "success", "new_version": "` + latest.Version() + `"}`
 }
 
 
