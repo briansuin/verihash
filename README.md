@@ -135,3 +135,4 @@ Credential is linked to the previous credential hash
 Credential is stored in the local ledger
    ↓
 Optional sanitized public broadcast
+```
