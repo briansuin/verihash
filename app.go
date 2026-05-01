@@ -1169,9 +1169,13 @@ func (a *App) GetAppVersion() string {
 
 // CheckForUpdate queries GitHub for the latest release version.
 func (a *App) CheckForUpdate(currentVersion string) string {
-	latest, found, err := selfupdate.DetectLatest(context.Background(), selfupdate.ParseSlug("briansuin/verihash"))
+	updater, _ := selfupdate.NewUpdater(selfupdate.Config{
+		Filters: []string{`.*\.exe$`},
+	})
+	latest, found, err := updater.DetectLatest(context.Background(), selfupdate.ParseSlug("briansuin/verihash"))
 	if err != nil {
-		return `{"error": "Failed to check for updates: ` + strings.ReplaceAll(err.Error(), `"`, `'`) + `"}`
+		b, _ := json.Marshal(map[string]string{"error": "Failed to check for updates: " + err.Error()})
+		return string(b)
 	}
 	if !found {
 		return `{"update_available": false}`
@@ -1185,9 +1189,13 @@ func (a *App) CheckForUpdate(currentVersion string) string {
 
 // ApplyUpdate downloads the latest release from GitHub.
 func (a *App) ApplyUpdate() string {
-	latest, err := selfupdate.UpdateSelf(context.Background(), "0.0.0", selfupdate.ParseSlug("briansuin/verihash"))
+	updater, _ := selfupdate.NewUpdater(selfupdate.Config{
+		Filters: []string{`.*\.exe$`},
+	})
+	latest, err := updater.UpdateSelf(context.Background(), "0.0.0", selfupdate.ParseSlug("briansuin/verihash"))
 	if err != nil {
-		return `{"error": "Update failed: ` + strings.ReplaceAll(err.Error(), `"`, `'`) + `"}`
+		b, _ := json.Marshal(map[string]string{"error": "Update failed: " + err.Error()})
+		return string(b)
 	}
 	runtime.EventsEmit(a.ctx, "log", map[string]string{
 		"msg":  "[SYSTEM] Update successfully applied: " + latest.Version(),
