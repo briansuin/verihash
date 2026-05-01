@@ -161,3 +161,7 @@ export function VerifyChain() {
 export function VerifyCredential(arg1) {
   return window['go']['main']['App']['VerifyCredential'](arg1);
 }
+
+export function WipeIdentity() {
+  return window['go']['main']['App']['WipeIdentity']();
+}

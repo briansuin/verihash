@@ -1,4 +1,4 @@
-import { SelectDirectory, SaveConfig, StartWatchdog, TriggerMint, GetDID, LoadConfig, GetWorkspaceFiles, GetLedger, ExportCredentialJSON, ExportSanitizedJSON, RestoreDataFromSync, GenerateHTMLReport, RevokeCredential, VerifyChain, VerifyCredential, SaveToFile, GetWalletStatus, UnlockWallet, InitWallet, MigrateWallet, GetMnemonic, LockVault, ToggleAutoStart, IsAutoStartEnabled, ImportMnemonic, UpdateIgnoredPatterns, SaveSessionIgnores, ResolveDroppedPath, BroadcastVC, GetBroadcastStatus, ResetBroadcastVC, DeleteBroadcastVC, GetProfileIndex, GetProfileInfo, SaveProfileInfo, GetAppVersion, CheckForUpdate, ApplyUpdate } from '../wailsjs/go/main/App';
+import { SelectDirectory, SaveConfig, StartWatchdog, TriggerMint, GetDID, LoadConfig, GetWorkspaceFiles, GetLedger, ExportCredentialJSON, ExportSanitizedJSON, RestoreDataFromSync, GenerateHTMLReport, RevokeCredential, VerifyChain, VerifyCredential, SaveToFile, GetWalletStatus, UnlockWallet, InitWallet, MigrateWallet, GetMnemonic, LockVault, ToggleAutoStart, IsAutoStartEnabled, ImportMnemonic, UpdateIgnoredPatterns, SaveSessionIgnores, ResolveDroppedPath, BroadcastVC, GetBroadcastStatus, ResetBroadcastVC, DeleteBroadcastVC, GetProfileIndex, GetProfileInfo, SaveProfileInfo, GetAppVersion, CheckForUpdate, ApplyUpdate, WipeIdentity } from '../wailsjs/go/main/App';
 import { EventsOn, WindowGetSize, WindowSetSize, OnFileDrop } from '../wailsjs/runtime/runtime';
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -2214,6 +2214,26 @@ document.addEventListener('DOMContentLoaded', async () => {
             } finally {
                 btnRestoreMnemonic.innerHTML = '\u26A0 \u00a0RESTORE NODE IDENTITY';
                 btnRestoreMnemonic.disabled = false;
+            }
+        });
+    }
+
+    // ======== WIPE IDENTITY (FACTORY RESET) ========
+    const btnWipeIdentity = document.getElementById('btn-wipe-identity');
+    if (btnWipeIdentity) {
+        btnWipeIdentity.addEventListener('click', async () => {
+            if (confirm("⚠️ DANGER: This will permanently delete your identity, configuration, and local ledger from this device.\n\nAre you absolutely sure you want to factory reset?")) {
+                btnWipeIdentity.innerText = "WIPING DATA...";
+                btnWipeIdentity.disabled = true;
+                try {
+                    await WipeIdentity();
+                    alert("Factory reset complete. The application will now restart.");
+                    location.reload();
+                } catch (e) {
+                    alert("Error wiping identity: " + e);
+                    btnWipeIdentity.innerText = "⚠️ FACTORY RESET / WIPE IDENTITY";
+                    btnWipeIdentity.disabled = false;
+                }
             }
         });
     }

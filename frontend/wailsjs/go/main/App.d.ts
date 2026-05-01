@@ -81,3 +81,5 @@ export function UpdateIgnoredPatterns(arg1:Array<string>):Promise<string>;
 export function VerifyChain():Promise<string>;
 
 export function VerifyCredential(arg1:string):Promise<string>;
+
+export function WipeIdentity():Promise<string>;

@@ -7,8 +7,9 @@
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
   "info": {
+    "companyName": "BrianSuin",
     "productName": "VeriHash",
-    "productVersion": "0.3.4"
+    "productVersion": "0.3.5"
   },
   "author": {
     "name": "Brian Suin",

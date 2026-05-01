@@ -1196,4 +1196,56 @@ func (a *App) ApplyUpdate() string {
 	return `{"status": "success", "new_version": "` + latest.Version() + `"}`
 }
 
+// WipeIdentity permanently deletes all local identity, configuration, and ledger data, returning the app to a factory state.
+// It explicitly avoids deleting cloud-synced backups.
+func (a *App) WipeIdentity() string {
+	// 1. Close active DB
+	if a.db != nil {
+		a.db.conn.Close()
+		a.db = nil
+	}
+
+	// 2. Clear OS Keyring (ignore errors if it doesn't exist)
+	_ = keyring.Delete("VeriHash", "vault_password")
+
+	// 3. Clear memory
+	a.privKey = nil
+	a.pubKey = nil
+	a.walletStatus = WalletStatusNew
+	a.mnemonic = ""
+	a.watchDirs = nil
+	a.aiEngine = ""
+	a.modelName = ""
+	a.apiKey = ""
+	a.baseURL = ""
+	a.cloudSyncDirs = nil
+	a.ignoredPatterns = nil
+	if a.broadcastManager != nil {
+		a.broadcastManager = nil
+	}
+	if a.indexUpdater != nil {
+		a.indexUpdater = nil
+	}
+
+	// 4. Delete local files
+	filesToDelete := []string{
+		identityFile,
+		privateKeyFile,
+		privateKeyFile + ".bak",
+		"proof_of_work.db",
+		"proof_of_work.db-shm",
+		"proof_of_work.db-wal",
+		"proof_of_work.db.bak",
+		"verihash_ledger.db", // Only deleting the local root copy, cloud backups are untouched.
+		"verihash_config.json",
+		"verihash_config.json.bak",
+	}
+
+	for _, f := range filesToDelete {
+		os.Remove(f)
+	}
+
+	return `{"status": "success"}`
+}
+
 
