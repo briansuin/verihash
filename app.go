@@ -1170,7 +1170,7 @@ func (a *App) GetAppVersion() string {
 // CheckForUpdate queries GitHub for the latest release version.
 func (a *App) CheckForUpdate(currentVersion string) string {
 	updater, _ := selfupdate.NewUpdater(selfupdate.Config{
-		Filters: []string{`.*\.exe$`},
+		Filters: []string{`^verihash-(windows|darwin|linux)-(amd64|arm64)(\.exe)?$`},
 	})
 	latest, found, err := updater.DetectLatest(context.Background(), selfupdate.ParseSlug("briansuin/verihash"))
 	if err != nil {
@@ -1190,7 +1190,7 @@ func (a *App) CheckForUpdate(currentVersion string) string {
 // ApplyUpdate downloads the latest release from GitHub.
 func (a *App) ApplyUpdate() string {
 	updater, _ := selfupdate.NewUpdater(selfupdate.Config{
-		Filters: []string{`.*\.exe$`},
+		Filters: []string{`^verihash-(windows|darwin|linux)-(amd64|arm64)(\.exe)?$`},
 	})
 	latest, err := updater.UpdateSelf(context.Background(), "0.0.0", selfupdate.ParseSlug("briansuin/verihash"))
 	if err != nil {
