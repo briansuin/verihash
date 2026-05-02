@@ -18,9 +18,9 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
-const (
-	identityFile   = "node_identity.json"
-	privateKeyFile = ".node_secret.key"
+var (
+	identityFile   = DataPath("node_identity.json")
+	privateKeyFile = DataPath(".node_secret.key")
 )
 
 // NodeIdentity represents the public profile of the user

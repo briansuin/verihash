@@ -11,7 +11,9 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const dbFile = "proof_of_work.db"
+// dbFile is the absolute path to the SQLite ledger database.
+// Evaluated lazily via DataPath so it always resolves to AppDataDir/proof_of_work.db.
+var dbFile = DataPath("proof_of_work.db")
 
 func initDB() error {
 	db, err := sql.Open("sqlite", dbFile)

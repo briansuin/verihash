@@ -13,6 +13,17 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
+// isAutoStartLaunch returns true when the app was launched by Windows at boot
+// (i.e. the --autostart flag was injected by ToggleAutoStart into the registry value).
+func isAutoStartLaunch() bool {
+	for _, arg := range os.Args[1:] {
+		if arg == "--autostart" {
+			return true
+		}
+	}
+	return false
+}
+
 // setupSystemTray initializes the system tray icon, tooltips, and menus
 func setupSystemTray(ctx context.Context) {
 	// systray.Run in energye fork is more stable in goroutines for Windows/Wails
@@ -62,7 +73,8 @@ func (a *App) ToggleAutoStart(enable bool) error {
 		if err != nil {
 			return err
 		}
-		err = k.SetStringValue("VeriHash", "\""+exePath+"\"")
+		// --autostart flag lets the app detect a boot-time launch and hide its window silently
+		err = k.SetStringValue("VeriHash", "\""+exePath+"\"" + " --autostart")
 		if err != nil {
 			return fmt.Errorf("failed to set registry value: %v", err)
 		}
@@ -79,7 +91,7 @@ func (a *App) ToggleAutoStart(enable bool) error {
 	
 	bytes, err := json.MarshalIndent(config, "", "  ")
 	if err == nil {
-		os.WriteFile("verihash_config.json", bytes, 0644)
+		os.WriteFile(configPath, bytes, 0644)
 	}
 	
 	return nil
@@ -99,5 +111,6 @@ func (a *App) IsAutoStartEnabled() bool {
 	}
 	
 	exePath, _ := os.Executable()
-	return val == "\""+exePath+"\""
+	// Accept both the plain path and the path with the --autostart flag
+	return val == "\""+exePath+"\"" || val == "\""+exePath+"\"" + " --autostart"
 }

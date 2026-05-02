@@ -21,6 +21,10 @@ import (
 //go:embed wails.json
 var wailsJSON []byte
 
+// configPath is the absolute path to the user's VeriHash configuration file.
+// Stored in AppDataDir so it survives app upgrades and reinstalls.
+var configPath = DataPath("verihash_config.json")
+
 // Config represents persistent application settings
 type Config struct {
 	Workspaces      []string            `json:"workspaces"`
@@ -95,6 +99,7 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.db = db
 
+
 	// 2. Initialize Crypto — detect key file state
 	pubKey, privKey, status, mnemonic, cryptoErr := initCrypto()
 	if cryptoErr != nil {
@@ -131,6 +136,11 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	setupSystemTray(ctx)
+	// If launched by Windows at boot (--autostart flag), hide the window so the app
+	// boots silently into the system tray without interrupting the user's login session.
+	if isAutoStartLaunch() {
+		runtime.WindowHide(ctx)
+	}
 	runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[SYSTEM] Booting VeriHash Core...", "type": "sys"})
 
 	// 3. Load config so cloudSyncDirs are available at startup
@@ -146,7 +156,7 @@ func (a *App) startup(ctx context.Context) {
 		// Phase 4.5: Start the IndexUpdater background worker.
 		// It listens for signals from Mint and Revoke and serially syncs the
 		// public root index Gist, debouncing burst updates automatically.
-		iu := NewIndexUpdater(a.db, gistBroadcaster, "verihash_config.json")
+		iu := NewIndexUpdater(a.db, gistBroadcaster, configPath)
 		a.indexUpdater = iu
 		a.broadcastManager.indexUpdater = iu
 		iu.Start()
@@ -286,7 +296,7 @@ func (a *App) GetDID() string {
 // LoadConfig loads memory from disk
 func (a *App) LoadConfig() Config {
 	var cfg Config
-	bytes, err := os.ReadFile("verihash_config.json")
+	bytes, err := os.ReadFile(configPath)
 	if err == nil {
 		json.Unmarshal(bytes, &cfg)
 		a.watchDirs = cfg.Workspaces
@@ -385,7 +395,7 @@ func (a *App) SaveConfig(workspaces []string, engine, modelName, key, baseURL st
 
 	// Preserve fields not managed by this call
 	var existingCfg Config
-	if existingBytes, err := os.ReadFile("verihash_config.json"); err == nil {
+	if existingBytes, err := os.ReadFile(configPath); err == nil {
 		json.Unmarshal(existingBytes, &existingCfg)
 	}
 
@@ -417,7 +427,7 @@ func (a *App) SaveConfig(workspaces []string, engine, modelName, key, baseURL st
 		ProfileCustom:  existingCfg.ProfileCustom,
 	}
 	bytes, _ := json.MarshalIndent(cfg, "", "  ")
-	os.WriteFile("verihash_config.json", bytes, 0644)
+	os.WriteFile(configPath, bytes, 0644)
 
 	// Re-register broadcaster and IndexUpdater with new PAT immediately
 	if a.broadcastManager != nil && pat != "" {
@@ -425,7 +435,7 @@ func (a *App) SaveConfig(workspaces []string, engine, modelName, key, baseURL st
 		a.broadcastManager.RegisterBroadcaster(gistBroadcaster)
 		// Restart IndexUpdater with new broadcaster if it wasn't running before
 		if a.indexUpdater == nil {
-			iu := NewIndexUpdater(a.db, gistBroadcaster, "verihash_config.json")
+			iu := NewIndexUpdater(a.db, gistBroadcaster, configPath)
 			a.indexUpdater = iu
 			a.broadcastManager.indexUpdater = iu
 			iu.Start()
@@ -461,14 +471,14 @@ func (a *App) UpdateIgnoredPatterns(patterns []string) string {
 	a.ignoredPatterns = patterns
 	
 	var cfg Config
-	bytes, err := os.ReadFile("verihash_config.json")
+	bytes, err := os.ReadFile(configPath)
 	if err == nil {
 		json.Unmarshal(bytes, &cfg)
 	}
 	
 	cfg.IgnoredPatterns = patterns
 	out, _ := json.MarshalIndent(cfg, "", "  ")
-	os.WriteFile("verihash_config.json", out, 0644)
+	os.WriteFile(configPath, out, 0644)
 
 	// Since watchdog doesn't easily support dynamic reload yet, we notify user
 	runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[SYSTEM] Ignored patterns updated. Changes will affect new scans.", "type": "sys"})
@@ -478,7 +488,7 @@ func (a *App) UpdateIgnoredPatterns(patterns []string) string {
 // LoadSessionIgnores retrieves the localized session exclusions from config
 func (a *App) LoadSessionIgnores() map[string][]string {
 	var cfg Config
-	if bytes, err := os.ReadFile("verihash_config.json"); err == nil {
+	if bytes, err := os.ReadFile(configPath); err == nil {
 		json.Unmarshal(bytes, &cfg)
 		if cfg.SessionIgnores != nil {
 			return cfg.SessionIgnores
@@ -490,7 +500,7 @@ func (a *App) LoadSessionIgnores() map[string][]string {
 // SaveSessionIgnores persists the UI dropdown exclusions map for a specific workspace
 func (a *App) SaveSessionIgnores(ws string, rules []string) string {
 	var cfg Config
-	if bytes, err := os.ReadFile("verihash_config.json"); err == nil {
+	if bytes, err := os.ReadFile(configPath); err == nil {
 		json.Unmarshal(bytes, &cfg)
 	}
 	if cfg.SessionIgnores == nil {
@@ -499,7 +509,7 @@ func (a *App) SaveSessionIgnores(ws string, rules []string) string {
 	cfg.SessionIgnores[ws] = rules
 
 	out, _ := json.MarshalIndent(cfg, "", "  ")
-	os.WriteFile("verihash_config.json", out, 0644)
+	os.WriteFile(configPath, out, 0644)
 	return "OK"
 }
 
@@ -782,7 +792,7 @@ func (a *App) RestoreDataFromSync() string {
 	cfg := a.LoadConfig()
 	if cfg.GitHubPAT != "" {
 		broadcaster := NewGitHubGistBroadcaster(cfg.GitHubPAT)
-		iu := NewIndexUpdater(a.db, broadcaster, "verihash_config.json")
+		iu := NewIndexUpdater(a.db, broadcaster, configPath)
 		a.indexUpdater = iu
 		a.broadcastManager.indexUpdater = iu
 		iu.Start()
@@ -1099,7 +1109,7 @@ func (a *App) GetProfileIndex() string {
 // GetProfileInfo returns the current public profile fields stored in config.
 func (a *App) GetProfileInfo() string {
 	var existingCfg Config
-	if b, err := os.ReadFile("verihash_config.json"); err == nil {
+	if b, err := os.ReadFile(configPath); err == nil {
 		json.Unmarshal(b, &existingCfg)
 	}
 	out, _ := json.Marshal(map[string]interface{}{
@@ -1116,7 +1126,7 @@ func (a *App) GetProfileInfo() string {
 // All fields are optional \u2014 empty values are stored as empty strings / nil maps.
 func (a *App) SaveProfileInfo(name, website string, customJSON string) string {
 	var existingCfg Config
-	if b, err := os.ReadFile("verihash_config.json"); err == nil {
+	if b, err := os.ReadFile(configPath); err == nil {
 		json.Unmarshal(b, &existingCfg)
 	}
 
@@ -1138,7 +1148,7 @@ func (a *App) SaveProfileInfo(name, website string, customJSON string) string {
 	if err != nil {
 		return `{"error": "Failed to serialize config"}`
 	}
-	if err := os.WriteFile("verihash_config.json", out, 0644); err != nil {
+	if err := os.WriteFile(configPath, out, 0644); err != nil {
 		return `{"error": "Failed to write config: ` + strings.ReplaceAll(err.Error(), `"`, `'`) + `"}`
 	}
 
@@ -1245,8 +1255,8 @@ func (a *App) WipeIdentity() string {
 		"proof_of_work.db-wal",
 		"proof_of_work.db.bak",
 		"verihash_ledger.db", // Only deleting the local root copy, cloud backups are untouched.
-		"verihash_config.json",
-		"verihash_config.json.bak",
+		configPath,
+		configPath+".bak",
 	}
 
 	for _, f := range filesToDelete {
