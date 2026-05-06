@@ -26,3 +26,7 @@ func (a *App) ToggleAutoStart(enable bool) error {
 func (a *App) IsAutoStartEnabled() bool {
 	return false
 }
+
+// EnsureSingleInstance is a no-op on non-Windows platforms.
+// Single-instance enforcement is only implemented via Named Mutex on Windows.
+func EnsureSingleInstance() {}

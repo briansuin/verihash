@@ -15,6 +15,10 @@ var assets embed.FS
 var iconData []byte
 
 func main() {
+	// Prevent multiple instances: if VeriHash is already running, wake its
+	// window (via WM_USER+1 broadcast) and exit this process immediately.
+	EnsureSingleInstance()
+
 	// Create an instance of the app structure
 	app := NewApp()
 

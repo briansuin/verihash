@@ -7,11 +7,55 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"unsafe"
 
 	"github.com/energye/systray"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
+
+const (
+	// mutexName must be unique to VeriHash so it doesn't clash with other apps.
+	mutexName = "Global\\VeriHash_SingleInstance_Mutex"
+	// wmBringToFront is WM_USER+1 (WM_USER = 0x0400), broadcast to ask the
+	// existing instance to un-hide itself from the system tray.
+	wmBringToFront = 0x0400 + 1
+)
+
+// EnsureSingleInstance creates a named mutex to guarantee only one instance runs.
+// If another instance is already running this function sends it a WM_USER+1 broadcast
+// (so it can un-hide itself from the tray) and then terminates the current process.
+// It must be called at the very start of main(), BEFORE Wails starts.
+func EnsureSingleInstance() {
+	name, _ := windows.UTF16PtrFromString(mutexName)
+	// ERROR_ALREADY_EXISTS is returned when a previous CreateMutex call already owns the name.
+	handle, err := windows.CreateMutex(nil, false, name)
+	if err != nil {
+		// Another instance is running — wake it up and exit.
+		bringExistingInstanceToFront()
+		os.Exit(0)
+	}
+	// Leak the handle intentionally; it lives for the entire process lifetime
+	// and is released automatically by the OS when the process exits.
+	_ = handle
+}
+
+// bringExistingInstanceToFront broadcasts WM_USER+1 so the existing VeriHash
+// window can react and show itself (handled by Wails window message pump).
+func bringExistingInstanceToFront() {
+	user32 := windows.NewLazySystemDLL("user32.dll")
+	postMsg := user32.NewProc("PostMessageW")
+
+	// HWND_BROADCAST = 0xFFFF; sends to all top-level windows.
+	postMsg.Call(
+		uintptr(0xFFFF), // HWND_BROADCAST
+		uintptr(wmBringToFront),
+		0,
+		0,
+	)
+	_ = unsafe.Sizeof(uintptr(0)) // keep "unsafe" import used
+}
 
 // isAutoStartLaunch returns true when the app was launched by Windows at boot
 // (i.e. the --autostart flag was injected by ToggleAutoStart into the registry value).
