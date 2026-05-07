@@ -22,10 +22,6 @@ export function ExportCredentialJSON(arg1) {
   return window['go']['main']['App']['ExportCredentialJSON'](arg1);
 }
 
-export function ExportSanitizedJSON(arg1) {
-  return window['go']['main']['App']['ExportSanitizedJSON'](arg1);
-}
-
 export function GenerateHTMLReport(arg1, arg2) {
   return window['go']['main']['App']['GenerateHTMLReport'](arg1, arg2);
 }

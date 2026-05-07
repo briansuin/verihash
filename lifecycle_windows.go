@@ -15,6 +15,10 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
+// systrayEnd holds the cleanup function returned by RunWithExternalLoop.
+// It is called during OnShutdown to remove the tray icon gracefully.
+var systrayEnd func()
+
 const (
 	// mutexName must be unique to VeriHash so it doesn't clash with other apps.
 	mutexName = "Global\\VeriHash_SingleInstance_Mutex"
@@ -68,17 +72,22 @@ func isAutoStartLaunch() bool {
 	return false
 }
 
-// setupSystemTray initializes the system tray icon, tooltips, and menus
-func setupSystemTray(ctx context.Context) {
-	// systray.Run in energye fork is more stable in goroutines for Windows/Wails
-	go systray.Run(func() {
+// setupSystemTray initializes the system tray icon, tooltips, and menus.
+// RunWithExternalLoop is used instead of Run so that the Win32 message pump
+// integrates with Wails' existing event loop rather than competing with it.
+// Calling plain `go systray.Run(...)` puts the pump on an unlocked goroutine,
+// which causes Shell_NotifyIcon click messages to be silently dropped.
+func setupSystemTray(a *App) {
+	start, end := systray.RunWithExternalLoop(func() {
 		systray.SetIcon(iconData)
 		systray.SetTitle("VeriHash")
 		systray.SetTooltip("VeriHash Node Running")
 
 		// BIND LEFT CLICK: Show window directly
 		systray.SetOnClick(func(menu systray.IMenu) {
-			runtime.WindowShow(ctx)
+			if a.ctx != nil {
+				runtime.WindowShow(a.ctx)
+			}
 		})
 
 		// BIND RIGHT CLICK: Show context menu
@@ -88,20 +97,33 @@ func setupSystemTray(ctx context.Context) {
 
 		mShow := systray.AddMenuItem("Show VeriHash", "Bring VeriHash window to front")
 		mShow.Click(func() {
-			runtime.WindowShow(ctx)
+			if a.ctx != nil {
+				runtime.WindowShow(a.ctx)
+			}
 		})
 
 		systray.AddSeparator()
-		
+
 		mQuit := systray.AddMenuItem("Quit", "Terminate the VeriHash background node")
 		mQuit.Click(func() {
-			// Signal Wails to quit; cleanup handled in OnExit
-			runtime.Quit(ctx)
+			// Signal Wails to quit; cleanup handled in OnShutdown
+			if a.ctx != nil {
+				runtime.Quit(a.ctx)
+			}
 		})
-	}, func() {
-		// onExit: Clean up tray icon
-		systray.Quit()
-	})
+	}, nil)
+
+	// Store end so shutdownTray() can clean up on Wails OnShutdown.
+	systrayEnd = end
+	// start() registers the hidden Win32 window and begins dispatching messages.
+	start()
+}
+
+// shutdownTray removes the tray icon when Wails is shutting down.
+func (a *App) shutdownTray(ctx context.Context) {
+	if systrayEnd != nil {
+		systrayEnd()
+	}
 }
 
 // ToggleAutoStart adds or removes VeriHash from the Windows boot sequence

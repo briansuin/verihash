@@ -22,6 +22,10 @@ func main() {
 	// Create an instance of the app structure
 	app := NewApp()
 
+	// Set up the tray immediately on the main thread BEFORE wails.Run
+	// so the Win32 message loop is bound to the main OS thread.
+	setupSystemTray(app)
+
 	// Create application with options
 	err := wails.Run(&options.App{
 		Title:  "VeriHash",
@@ -36,6 +40,7 @@ func main() {
 		HideWindowOnClose: true,
 		BackgroundColour:  &options.RGBA{R: 27, G: 38, B: 54, A: 1},
 		OnStartup:        app.startup,
+		OnShutdown:       app.shutdownTray,
 		Bind: []interface{}{
 			app,
 		},

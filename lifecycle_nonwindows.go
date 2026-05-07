@@ -10,7 +10,7 @@ import (
 
 // setupSystemTray is a stub for non-Windows platforms to prevent main-thread panic.
 // macOS system tray requires main thread execution, which conflicts with Wails.
-func setupSystemTray(ctx context.Context) {
+func setupSystemTray(a *App) {
 	fmt.Println("[SYSTEM] Background tray disabled on non-Windows platform to prevent thread collision.")
 }
 
@@ -30,3 +30,6 @@ func (a *App) IsAutoStartEnabled() bool {
 // EnsureSingleInstance is a no-op on non-Windows platforms.
 // Single-instance enforcement is only implemented via Named Mutex on Windows.
 func EnsureSingleInstance() {}
+
+// shutdownTray is a no-op on non-Windows platforms.
+func (a *App) shutdownTray(ctx context.Context) {}

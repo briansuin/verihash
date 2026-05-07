@@ -40,6 +40,7 @@ type Config struct {
 	IndexGistID     string              `json:"index_gist_id"`     // Phase 4.5: pinned root index Gist ID (stable anchor)
 	IndexGistURL    string              `json:"index_gist_url"`    // Phase 4.5: public URL of the root index Gist
 	DisplayName     string              `json:"display_name"`      // Human-readable name shown in the public index
+	ExportDir       string              `json:"export_dir"`        // Directory for exported HTML reports
 	// Public Profile — all opt-in, published to Index Gist if set
 	ProfileName    string            `json:"profile_name"`
 	ProfileWebsite string            `json:"profile_website"`
@@ -52,6 +53,7 @@ type LedgerEntry struct {
 	Timestamp      float64 `json:"timestamp"`
 	ProjectContext string  `json:"project_context"`
 	AiInsight      string  `json:"ai_insight"`
+	SkillTags      string  `json:"skill_tags"`
 	FilePaths      string  `json:"file_paths"`
 	Status         int     `json:"status"`
 	VcHash         string  `json:"vc_hash"`
@@ -135,7 +137,6 @@ func (a *App) startup(ctx context.Context) {
 		a.privKey = privKey
 	}
 
-	setupSystemTray(ctx)
 	// If launched by Windows at boot (--autostart flag), hide the window so the app
 	// boots silently into the system tray without interrupting the user's login session.
 	if isAutoStartLaunch() {
@@ -425,6 +426,7 @@ func (a *App) SaveConfig(workspaces []string, engine, modelName, key, baseURL st
 		ProfileName:    existingCfg.ProfileName,
 		ProfileWebsite: existingCfg.ProfileWebsite,
 		ProfileCustom:  existingCfg.ProfileCustom,
+		ExportDir:      existingCfg.ExportDir,
 	}
 	bytes, _ := json.MarshalIndent(cfg, "", "  ")
 	os.WriteFile(configPath, bytes, 0644)
@@ -634,7 +636,7 @@ func (a *App) GetWorkspaceFiles(workspace string) []string {
 // GetLedger returns all active credentials from the database, ordered newest first
 func (a *App) GetLedger() []LedgerEntry {
 	rows, err := a.db.conn.Query(`
-		SELECT vc_id, timestamp, project_context, ai_insight, file_paths, status, COALESCE(vc_hash, ''), full_vc_json
+		SELECT vc_id, timestamp, project_context, ai_insight, skill_tags, file_paths, status, COALESCE(vc_hash, ''), full_vc_json
 		FROM session_credentials
 		WHERE status = 1
 		ORDER BY timestamp DESC
@@ -647,7 +649,7 @@ func (a *App) GetLedger() []LedgerEntry {
 	var entries []LedgerEntry
 	for rows.Next() {
 		var e LedgerEntry
-		if err := rows.Scan(&e.VcID, &e.Timestamp, &e.ProjectContext, &e.AiInsight, &e.FilePaths, &e.Status, &e.VcHash, &e.FullVcJson); err != nil {
+		if err := rows.Scan(&e.VcID, &e.Timestamp, &e.ProjectContext, &e.AiInsight, &e.SkillTags, &e.FilePaths, &e.Status, &e.VcHash, &e.FullVcJson); err != nil {
 			continue
 		}
 
@@ -692,26 +694,6 @@ func (a *App) ExportCredentialJSON(vcID string) string {
 		return `{"error": "Credential not found"}`
 	}
 	return fullJSON
-}
-
-// ExportSanitizedJSON returns a privacy-scrubbed version of the VC JSON.
-// It removes the localMetadata block (containing full paths) so it's safe for public sharing.
-func (a *App) ExportSanitizedJSON(vcID string) string {
-	rawJSON := a.ExportCredentialJSON(vcID)
-	if strings.Contains(rawJSON, `"error"`) {
-		return rawJSON
-	}
-
-	var vc VCSchema
-	if err := json.Unmarshal([]byte(rawJSON), &vc); err != nil {
-		return `{"error": "Failed to parse credential: ` + err.Error() + `"}`
-	}
-
-	// Scrub Private Data
-	vc.LocalMetadata = nil
-
-	sanitized, _ := json.MarshalIndent(vc, "", "  ")
-	return string(sanitized)
 }
 
 // RestoreDataFromSync finds the newest verihash_ledger.db across all configured
@@ -828,7 +810,26 @@ func (a *App) GenerateHTMLReport(vcID string, customTitle string) string {
 		return `{"error": "Failed to parse credential: ` + err.Error() + `"}`
 	}
 
-	err := GenerateReport(vc, customTitle)
+	cfg := a.LoadConfig()
+
+	dir, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+		Title:            "Select Directory to Save HTML Report",
+		DefaultDirectory: cfg.ExportDir,
+	})
+	if err != nil {
+		return `{"error": "Failed to open directory dialog: ` + err.Error() + `"}`
+	}
+	if dir == "" {
+		// User cancelled the dialog
+		return `{"status": "CANCELLED"}`
+	}
+
+	// Update config with the new default directory
+	cfg.ExportDir = dir
+	bytes, _ := json.MarshalIndent(cfg, "", "  ")
+	os.WriteFile(configPath, bytes, 0644)
+
+	err = GenerateReport(vc, customTitle, dir)
 	if err != nil {
 		return `{"error": "Failed to generate HTML: ` + err.Error() + `"}`
 	}

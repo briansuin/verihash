@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/flosch/pongo2/v6"
@@ -130,7 +131,7 @@ const reportTemplate = `
 `
 
 // GenerateReport renders a standalone HTML file from a Minted VC
-func GenerateReport(vc VCSchema, customTitle string) error {
+func GenerateReport(vc VCSchema, customTitle string, outputDir string) error {
 	colorYellow := "\033[33m"
 	colorGreen := "\033[32m"
 	colorReset := "\033[0m"
@@ -154,10 +155,12 @@ func GenerateReport(vc VCSchema, customTitle string) error {
 
 	// Parse insight and tags
 	rawEval := vc.CredentialSubject.ProofOfWork.AIEvaluation
-	insight := rawEval
+	insight := strings.ReplaceAll(strings.TrimSpace(rawEval), "[WORKLOAD AUDIT]", "")
+	insight = strings.TrimSpace(insight)
 	var tags []string
 
 	if strings.Contains(rawEval, "[VERIFIED SKILL TAGS]") {
+		// Legacy credentials where tags were embedded in the evaluation text
 		parts := strings.Split(rawEval, "[VERIFIED SKILL TAGS]")
 		insight = strings.ReplaceAll(strings.TrimSpace(parts[0]), "[WORKLOAD AUDIT]", "")
 		insight = strings.TrimSpace(insight)
@@ -166,6 +169,15 @@ func GenerateReport(vc VCSchema, customTitle string) error {
 		rawTags := strings.Split(tagsText, "\n")
 		for _, t := range rawTags {
 			cleanTag := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(t), "*"))
+			if cleanTag != "" {
+				tags = append(tags, cleanTag)
+			}
+		}
+	} else if vc.CredentialSubject.ProofOfWork.SkillTags != "" {
+		// Modern credentials where tags are a comma-separated string
+		rawTags := strings.Split(vc.CredentialSubject.ProofOfWork.SkillTags, ",")
+		for _, t := range rawTags {
+			cleanTag := strings.TrimSpace(t)
 			if cleanTag != "" {
 				tags = append(tags, cleanTag)
 			}
@@ -194,10 +206,12 @@ func GenerateReport(vc VCSchema, customTitle string) error {
 	}
 
 	// Create reports directory if not exists
-	reportsDir := "exports"
-	os.MkdirAll(reportsDir, 0755)
+	if outputDir == "" {
+		outputDir = "exports"
+	}
+	os.MkdirAll(outputDir, 0755)
 
-	fileName := fmt.Sprintf("%s/Proof_of_Work_%s.html", reportsDir, vc.CredentialSubject.ProofOfWork.HashChainRoot[:8])
+	fileName := filepath.Join(outputDir, fmt.Sprintf("Proof_of_Work_%s.html", vc.CredentialSubject.ProofOfWork.HashChainRoot[:8]))
 	
 	err = os.WriteFile(fileName, []byte(out), 0644)
 	if err != nil {

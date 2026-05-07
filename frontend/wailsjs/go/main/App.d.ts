@@ -12,8 +12,6 @@ export function DeleteBroadcastVC(arg1:string,arg2:string):Promise<string>;
 
 export function ExportCredentialJSON(arg1:string):Promise<string>;
 
-export function ExportSanitizedJSON(arg1:string):Promise<string>;
-
 export function GenerateHTMLReport(arg1:string,arg2:string):Promise<string>;
 
 export function GenerateHistoricReports():Promise<void>;

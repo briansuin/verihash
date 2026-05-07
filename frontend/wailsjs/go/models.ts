@@ -48,6 +48,7 @@ export namespace main {
 	    index_gist_id: string;
 	    index_gist_url: string;
 	    display_name: string;
+	    export_dir: string;
 	    profile_name: string;
 	    profile_website: string;
 	    profile_custom: Record<string, string>;
@@ -71,6 +72,7 @@ export namespace main {
 	        this.index_gist_id = source["index_gist_id"];
 	        this.index_gist_url = source["index_gist_url"];
 	        this.display_name = source["display_name"];
+	        this.export_dir = source["export_dir"];
 	        this.profile_name = source["profile_name"];
 	        this.profile_website = source["profile_website"];
 	        this.profile_custom = source["profile_custom"];
@@ -81,6 +83,7 @@ export namespace main {
 	    timestamp: number;
 	    project_context: string;
 	    ai_insight: string;
+	    skill_tags: string;
 	    file_paths: string;
 	    status: number;
 	    vc_hash: string;
@@ -97,6 +100,7 @@ export namespace main {
 	        this.timestamp = source["timestamp"];
 	        this.project_context = source["project_context"];
 	        this.ai_insight = source["ai_insight"];
+	        this.skill_tags = source["skill_tags"];
 	        this.file_paths = source["file_paths"];
 	        this.status = source["status"];
 	        this.vc_hash = source["vc_hash"];

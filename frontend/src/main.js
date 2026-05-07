@@ -1,4 +1,4 @@
-import { SelectDirectory, SaveConfig, StartWatchdog, TriggerMint, GetDID, LoadConfig, GetWorkspaceFiles, GetLedger, ExportCredentialJSON, ExportSanitizedJSON, RestoreDataFromSync, GenerateHTMLReport, RevokeCredential, VerifyChain, VerifyCredential, SaveToFile, GetWalletStatus, UnlockWallet, InitWallet, MigrateWallet, GetMnemonic, LockVault, ToggleAutoStart, IsAutoStartEnabled, ImportMnemonic, UpdateIgnoredPatterns, SaveSessionIgnores, ResolveDroppedPath, BroadcastVC, GetBroadcastStatus, ResetBroadcastVC, DeleteBroadcastVC, GetProfileIndex, GetProfileInfo, SaveProfileInfo, GetAppVersion, CheckForUpdate, ApplyUpdate, WipeIdentity } from '../wailsjs/go/main/App';
+import { SelectDirectory, SaveConfig, StartWatchdog, TriggerMint, GetDID, LoadConfig, GetWorkspaceFiles, GetLedger, ExportCredentialJSON, RestoreDataFromSync, GenerateHTMLReport, RevokeCredential, VerifyChain, VerifyCredential, SaveToFile, GetWalletStatus, UnlockWallet, InitWallet, MigrateWallet, GetMnemonic, LockVault, ToggleAutoStart, IsAutoStartEnabled, ImportMnemonic, UpdateIgnoredPatterns, SaveSessionIgnores, ResolveDroppedPath, BroadcastVC, GetBroadcastStatus, ResetBroadcastVC, DeleteBroadcastVC, GetProfileIndex, GetProfileInfo, SaveProfileInfo, GetAppVersion, CheckForUpdate, ApplyUpdate, WipeIdentity } from '../wailsjs/go/main/App';
 import { EventsOn, WindowGetSize, WindowSetSize, OnFileDrop } from '../wailsjs/runtime/runtime';
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -198,7 +198,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     const btnRefreshLedger = document.getElementById('btn-refresh-ledger');
     const btnVerifyChain = document.getElementById('btn-verify-chain');
     const btnCloseDrawer = document.getElementById('btn-close-drawer');
-    const btnExportJson = document.getElementById('btn-export-json');
     const btnRevokeCredential = document.getElementById('btn-revoke-credential');
     const revokeStatus = document.getElementById('revoke-status');
     const btnBroadcastGist = document.getElementById('btn-broadcast-gist');
@@ -1615,6 +1614,26 @@ document.addEventListener('DOMContentLoaded', async () => {
             drawerAiEngine.innerText = entry.ai_engine ? '[ ' + entry.ai_engine + ' ]' : '';
         }
 
+        const drawerSkillTags = document.getElementById('drawer-skill-tags');
+        if (drawerSkillTags) {
+            drawerSkillTags.innerHTML = '';
+            if (entry.skill_tags) {
+                const tags = entry.skill_tags.split(',').map(t => t.trim()).filter(Boolean);
+                if (tags.length > 0) {
+                    tags.forEach(t => {
+                        const span = document.createElement('span');
+                        span.style.cssText = 'background: rgba(0,255,204,0.1); color: #00ffcc; border: 1px solid rgba(0,255,204,0.3); padding: 2px 6px; border-radius: 3px;';
+                        span.innerText = t;
+                        drawerSkillTags.appendChild(span);
+                    });
+                } else {
+                    drawerSkillTags.innerHTML = '<span style="color:#888; font-style:italic;">No skill tags extracted.</span>';
+                }
+            } else {
+                drawerSkillTags.innerHTML = '<span style="color:#888; font-style:italic;">No skill tags extracted.</span>';
+            }
+        }
+
         // Prefer reading from the signed VC JSON which carries FileDate (physical OS ModTime watermark).
         // Falls back to the legacy file_paths string for credentials minted before this feature.
         let manifestHTML = '';
@@ -1888,23 +1907,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
 
-    // ======== JSON EXPORT ========
-    btnExportJson.addEventListener('click', async () => {
-        if (!activeVcId) return;
-        try {
-            // Use ExportSanitizedJSON for the Public UI to keep full paths private
-            const json = await ExportSanitizedJSON(activeVcId);
-            const parsed = JSON.parse(json);
-            if (parsed.error) { alert('Export failed: ' + parsed.error); return; }
-            const safeVcId = activeVcId.replace(/[:\\/*?"<>|]/g, '_').substring(0, 24);
-            const defaultName = `verihash_credential_${safeVcId}.json`;
-            const result = JSON.parse(await SaveToFile(defaultName, json));
-            if (result.error) alert('Save failed: ' + result.error);
-        } catch (e) {
-            alert('Export failed: ' + e);
-        }
-    });
-
     // ======== RESTORE FROM SYNC ========
     const btnRestoreHistory = document.getElementById('btn-restore-history');
     const cloudRestoreStatus = document.getElementById('cloud-restore-status');
@@ -1962,8 +1964,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const res = JSON.parse(resJSON);
                 if (res.error) {
                     alert('HTML Generation failed: ' + res.error);
+                } else if (res.status === 'CANCELLED') {
+                    // User cancelled the directory selection dialog, do nothing
                 } else {
-                    alert('Professional Audit Report generated successfully!\n\nCheck the "exports" folder in your VeriHash directory.');
+                    alert('Professional Audit Report generated successfully!\n\nCheck the folder you selected.');
                 }
             } catch (e) {
                 alert('Connection failure: ' + e);
