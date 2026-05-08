@@ -52,6 +52,8 @@ export function ResetBroadcastVC(arg1:string,arg2:string):Promise<string>;
 
 export function ResolveDroppedPath(arg1:string):Promise<string>;
 
+export function RestartApp():Promise<void>;
+
 export function RestoreDataFromSync():Promise<string>;
 
 export function RevokeCredential(arg1:string):Promise<string>;

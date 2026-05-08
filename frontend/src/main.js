@@ -1,4 +1,4 @@
-import { SelectDirectory, SaveConfig, StartWatchdog, TriggerMint, GetDID, LoadConfig, GetWorkspaceFiles, GetLedger, ExportCredentialJSON, RestoreDataFromSync, GenerateHTMLReport, RevokeCredential, VerifyChain, VerifyCredential, SaveToFile, GetWalletStatus, UnlockWallet, InitWallet, MigrateWallet, GetMnemonic, LockVault, ToggleAutoStart, IsAutoStartEnabled, ImportMnemonic, UpdateIgnoredPatterns, SaveSessionIgnores, ResolveDroppedPath, BroadcastVC, GetBroadcastStatus, ResetBroadcastVC, DeleteBroadcastVC, GetProfileIndex, GetProfileInfo, SaveProfileInfo, GetAppVersion, CheckForUpdate, ApplyUpdate, WipeIdentity } from '../wailsjs/go/main/App';
+import { SelectDirectory, SaveConfig, StartWatchdog, TriggerMint, GetDID, LoadConfig, GetWorkspaceFiles, GetLedger, ExportCredentialJSON, RestoreDataFromSync, GenerateHTMLReport, RevokeCredential, VerifyChain, VerifyCredential, SaveToFile, GetWalletStatus, UnlockWallet, InitWallet, MigrateWallet, GetMnemonic, LockVault, ToggleAutoStart, IsAutoStartEnabled, ImportMnemonic, UpdateIgnoredPatterns, SaveSessionIgnores, ResolveDroppedPath, BroadcastVC, GetBroadcastStatus, ResetBroadcastVC, DeleteBroadcastVC, GetProfileIndex, GetProfileInfo, SaveProfileInfo, GetAppVersion, CheckForUpdate, ApplyUpdate, WipeIdentity, RestartApp } from '../wailsjs/go/main/App';
 import { EventsOn, WindowGetSize, WindowSetSize, OnFileDrop } from '../wailsjs/runtime/runtime';
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -1359,14 +1359,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const btnSettings = document.getElementById('btn-settings');
     const identityModal = document.getElementById('identity-modal');
     const btnModalClose = document.getElementById('btn-modal-close');
-    const btnExportIdentity = document.getElementById('btn-export-identity');
-    const btnImportIdentity = document.getElementById('btn-import-identity');
-    const exportStatus = document.getElementById('export-status');
-    const importStatus = document.getElementById('import-status');
-
     function openIdentityModal() {
-        if (exportStatus) { exportStatus.className = 'modal-status'; exportStatus.innerText = ''; }
-        if (importStatus) { importStatus.className = 'modal-status'; importStatus.innerText = ''; }
         identityModal.classList.add('open');
         // Load public profile fields each time modal opens
         GetProfileInfo().then(raw => {
@@ -2071,156 +2064,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    // ======== IDENTITY BUNDLE EXPORT ========
-    if (btnExportIdentity) {
-        btnExportIdentity.addEventListener('click', async () => {
-            exportStatus.className = 'modal-status';
-            exportStatus.innerText = '';
 
-            btnExportIdentity.innerText = 'Encrypting... (may take a moment)';
-            btnExportIdentity.disabled = true;
-            try {
-                const bundleJSON = await ExportIdentityBundle(); // No args needed now
-                const parsed = JSON.parse(bundleJSON);
-                if (parsed.error) {
-                    exportStatus.className = 'modal-status err';
-                    exportStatus.innerText = '\u2715 Error: ' + parsed.error;
-                    return;
-                }
-                const did = parsed.did || 'identity';
-                const didShort = did.substring(did.length - 12);
-                const defaultName = `verihash_identity_${didShort}.encrypted.json`;
-                const saveResult = JSON.parse(await SaveToFile(defaultName, bundleJSON));
-                if (saveResult.error) {
-                    exportStatus.className = 'modal-status err';
-                    exportStatus.innerText = '\u2715 Save failed: ' + saveResult.error;
-                } else if (saveResult.cancelled) {
-                    exportStatus.innerText = '';
-                } else {
-                    exportStatus.className = 'modal-status ok';
-                    exportStatus.innerText = '\u2713 Encrypted bundle saved. It is encrypted with your current Vault Password.';
-                }
-            } catch (e) {
-                exportStatus.className = 'modal-status err';
-                exportStatus.innerText = '\u2715 Export failed: ' + e;
-            } finally {
-                btnExportIdentity.innerHTML = '\u2b07\u00a0EXPORT (ENCRYPTED)';
-                btnExportIdentity.disabled = false;
-            }
-        });
-    }
 
-    // ======== IDENTITY BUNDLE IMPORT ========
-    if (btnImportIdentity) {
-        btnImportIdentity.addEventListener('click', () => {
-            const importPwd = document.getElementById('import-pwd').value;
-            importStatus.className = 'modal-status';
-            importStatus.innerText = '';
 
-            if (!importPwd) {
-                importStatus.className = 'modal-status err';
-                importStatus.innerText = '\u2715 Enter the bundle password before selecting a file.';
-                document.getElementById('import-pwd').focus();
-                return;
-            }
-
-            const fileInput = document.createElement('input');
-            fileInput.type = 'file';
-            fileInput.accept = '.json,application/json';
-            fileInput.style.display = 'none';
-            document.body.appendChild(fileInput);
-            fileInput.addEventListener('change', async () => {
-                const file = fileInput.files[0];
-                if (!file) return;
-                const reader = new FileReader();
-                reader.onload = async (ev) => {
-                    const content = ev.target.result;
-                    btnImportIdentity.innerHTML = 'Decrypting &amp; verifying...';
-                    btnImportIdentity.disabled = true;
-                    try {
-                        const resultJSON = await ImportIdentityBundle(content, importPwd);
-                        const result = JSON.parse(resultJSON);
-                        if (result.error) {
-                            importStatus.className = 'modal-status err';
-                            importStatus.innerText = '\u2715 Failed: ' + result.error;
-                        } else {
-                            importStatus.className = 'modal-status ok';
-                            importStatus.innerHTML = `\u2713 Identity imported!<br>DID: <span style="color:#00cc88;font-size:0.65rem;word-break:break-all;">${result.did || ''}</span><br><br>Restart the app for the new identity to take effect.`;
-                            document.getElementById('import-pwd').value = '';
-                        }
-                    } catch (e) {
-                        importStatus.className = 'modal-status err';
-                        importStatus.innerText = '\u2715 Import error: ' + e;
-                    } finally {
-                        btnImportIdentity.innerHTML = '\u2b06\u00a0SELECT BUNDLE &amp; IMPORT';
-                        btnImportIdentity.disabled = false;
-                    }
-                };
-                reader.readAsText(file);
-                document.body.removeChild(fileInput);
-            });
-            fileInput.click();
-        });
-    }
-
-    // ======== MNEMONIC RESTORE ========
-    const btnRestoreMnemonic = document.getElementById('btn-restore-mnemonic');
-    if (btnRestoreMnemonic) {
-        btnRestoreMnemonic.addEventListener('click', async () => {
-            const mnemonicRaw = document.getElementById('mnemonic-input').value;
-            const mnemonic = mnemonicRaw.trim().replace(/\s+/g, ' ').toLowerCase();
-            const newPwd = document.getElementById('restore-pwd').value;
-            const confirm = document.getElementById('restore-pwd-confirm').value;
-            const statusEl = document.getElementById('restore-status');
-
-            statusEl.className = 'modal-status';
-            statusEl.innerText = '';
-
-            if (!mnemonic) {
-                statusEl.className = 'modal-status err';
-                statusEl.innerText = '\u2715 Please enter your 12-word recovery phrase.';
-                return;
-            }
-            if (newPwd.length < 8) {
-                statusEl.className = 'modal-status err';
-                statusEl.innerText = '\u2715 New password must be at least 8 characters.';
-                return;
-            }
-            if (newPwd !== confirm) {
-                statusEl.className = 'modal-status err';
-                statusEl.innerText = '\u2715 Passwords do not match.';
-                return;
-            }
-
-            btnRestoreMnemonic.innerHTML = '\u2699\u00a0REBUILDING IDENTITY...';
-            btnRestoreMnemonic.disabled = true;
-
-            try {
-                const resultJSON = await ImportMnemonic(mnemonic, newPwd, confirm);
-                const result = JSON.parse(resultJSON);
-                if (result.error) {
-                    statusEl.className = 'modal-status err';
-                    statusEl.innerText = '\u2715 Failed: ' + result.error;
-                } else {
-                    statusEl.className = 'modal-status ok';
-                    statusEl.innerHTML = `\u2713 Identity Restored Successfully!<br>DID: <span style="color:#00cc88;font-size:0.65rem;word-break:break-all;">${result.did || ''}</span><br><br>Restarting node...`;
-
-                    document.getElementById('mnemonic-input').value = '';
-                    document.getElementById('restore-pwd').value = '';
-                    document.getElementById('restore-pwd-confirm').value = '';
-
-                    // Gracefully reboot the UI space because crypto layers in Wails are reset.
-                    setTimeout(() => location.reload(), 2500);
-                }
-            } catch (e) {
-                statusEl.className = 'modal-status err';
-                statusEl.innerText = '\u2715 ' + e;
-            } finally {
-                btnRestoreMnemonic.innerHTML = '\u26A0 \u00a0RESTORE NODE IDENTITY';
-                btnRestoreMnemonic.disabled = false;
-            }
-        });
-    }
 
     // ======== WIPE IDENTITY (FACTORY RESET) ========
     const btnWipeIdentity = document.getElementById('btn-wipe-identity');
@@ -2286,7 +2132,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                             const upRes = JSON.parse(upStr);
                             if (upRes.status === "success") {
                                 updateStatus.innerText = "Update successful! Restarting in 3 seconds...";
-                                setTimeout(() => location.reload(), 3000);
+                                setTimeout(() => RestartApp(), 3000);
                             } else {
                                 updateStatus.style.color = "var(--warning)";
                                 updateStatus.innerText = "Update failed: " + upRes.error;

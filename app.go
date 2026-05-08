@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -285,6 +286,8 @@ func (a *App) LockVault() string {
 	keyring.Delete("VeriHash", "vault_password")
 	return `{"status": "locked"}`
 }
+
+
 
 // GetDID returns the W3C-compliant did:key identifier for this node
 func (a *App) GetDID() string {
@@ -1215,6 +1218,19 @@ func (a *App) ApplyUpdate() string {
 	return `{"status": "success", "new_version": "` + latest.Version() + `"}`
 }
 
+// RestartApp launches a new instance of the application and gracefully quits the current one.
+func (a *App) RestartApp() {
+	exe, err := os.Executable()
+	if err == nil {
+		if strings.HasSuffix(exe, ".old") {
+			exe = strings.TrimSuffix(exe, ".old")
+		}
+		cmd := exec.Command(exe)
+		_ = cmd.Start()
+	}
+	runtime.Quit(a.ctx)
+}
+
 // WipeIdentity permanently deletes all local identity, configuration, and ledger data, returning the app to a factory state.
 // It explicitly avoids deleting cloud-synced backups.
 func (a *App) WipeIdentity() string {
@@ -1263,6 +1279,17 @@ func (a *App) WipeIdentity() string {
 	for _, f := range filesToDelete {
 		os.Remove(f)
 	}
+
+	// 5. Reinitialize fresh state so frontend location.reload() works seamlessly
+	_ = initDB()
+	if newDB, err := connectDB(); err == nil {
+		a.db = newDB
+	}
+	pubKey, privKey, status, mnemonic, _ := initCrypto()
+	a.pubKey = pubKey
+	a.privKey = privKey
+	a.walletStatus = status
+	a.mnemonic = mnemonic
 
 	return `{"status": "success"}`
 }

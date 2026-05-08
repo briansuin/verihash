@@ -102,6 +102,10 @@ export function ResolveDroppedPath(arg1) {
   return window['go']['main']['App']['ResolveDroppedPath'](arg1);
 }
 
+export function RestartApp() {
+  return window['go']['main']['App']['RestartApp']();
+}
+
 export function RestoreDataFromSync() {
   return window['go']['main']['App']['RestoreDataFromSync']();
 }
