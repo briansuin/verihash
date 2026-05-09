@@ -845,6 +845,13 @@ func (a *App) GenerateHTMLReport(vcID string, customTitle string) string {
 }
 
 func (a *App) RevokeCredential(vcID string) string {
+	// Revocation requires signing with the private key — reject immediately if
+	// the vault is locked to prevent a nil-privKey panic in ed25519.Sign and to
+	// avoid writing an unsigned (invalid) revocation record to the ledger.
+	if a.walletIsLocked() {
+		return `{"error": "Wallet is locked. Unlock your vault before revoking a credential."}`
+	}
+
 	var vcHash string
 	errHash := a.db.conn.QueryRow(`SELECT vc_hash FROM session_credentials WHERE vc_id = ?`, vcID).Scan(&vcHash)
 	if errHash != nil {
