@@ -1717,10 +1717,59 @@ document.addEventListener('DOMContentLoaded', async () => {
                     });
                 }
             } else if (gistPub && (gistPub.status === 'pending' || gistPub.status === 'publishing')) {
-                // In-flight
+                // In-flight — start polling so the button updates when backend finishes
+                // (handles the case where the drawer is opened while a broadcast is running)
                 btnBroadcastGist.disabled = true;
                 btnBroadcastGist.innerText = '[ 📡 BROADCASTING... ]';
                 btnBroadcastGist.style.opacity = '0.6';
+                if (broadcastStatus) {
+                    broadcastStatus.style.display = 'block';
+                    broadcastStatus.style.background = 'rgba(0,180,255,0.06)';
+                    broadcastStatus.style.color = 'rgba(0,200,255,0.85)';
+                    broadcastStatus.style.border = '1px solid rgba(0,180,255,0.25)';
+                    broadcastStatus.innerText = '📡 Broadcast in progress — waiting for GitHub response...';
+                }
+                // Poll for completion (same logic as the click handler)
+                const polledVcId = entry.vc_id;
+                let pollCount = 0;
+                const pollInterval = setInterval(async () => {
+                    pollCount++;
+                    try {
+                        const freshPubs = await GetBroadcastStatus(polledVcId);
+                        const freshGistPub = (freshPubs || []).find(p => p.channel === 'gist');
+                        if (!freshGistPub) return;
+                        if (freshGistPub.status === 'success') {
+                            clearInterval(pollInterval);
+                            if (activeVcId === polledVcId && btnBroadcastGist) {
+                                btnBroadcastGist.disabled = true;
+                                btnBroadcastGist.innerText = '[ ✅ GIST PUBLISHED ]';
+                                btnBroadcastGist.style.opacity = '0.55';
+                                btnBroadcastGist.style.cursor = 'not-allowed';
+                            }
+                            if (broadcastStatus && activeVcId === polledVcId) {
+                                broadcastStatus.style.background = 'rgba(0,255,204,0.06)';
+                                broadcastStatus.style.color = 'rgba(0,255,204,0.8)';
+                                broadcastStatus.style.border = '1px solid rgba(0,255,204,0.2)';
+                                broadcastStatus.innerHTML = `✅ Published to GitHub Gist · <a href="${freshGistPub.remote_url}" style="color:#00ffcc;" target="_blank">${freshGistPub.remote_url}</a>`;
+                            }
+                        } else if (freshGistPub.status === 'failed' || pollCount >= 40) {
+                            clearInterval(pollInterval);
+                            if (activeVcId === polledVcId && btnBroadcastGist) {
+                                btnBroadcastGist.disabled = false;
+                                btnBroadcastGist.innerText = '[ 📡 BROADCAST GIST ]';
+                                btnBroadcastGist.style.opacity = '1';
+                                btnBroadcastGist.style.cursor = 'pointer';
+                            }
+                            if (broadcastStatus && activeVcId === polledVcId) {
+                                const errMsg = freshGistPub.last_error || (pollCount >= 40 ? 'Timed out — check logs' : 'Unknown error');
+                                broadcastStatus.style.background = 'rgba(255,85,0,0.08)';
+                                broadcastStatus.style.color = 'var(--warning)';
+                                broadcastStatus.style.border = '1px solid rgba(255,85,0,0.4)';
+                                broadcastStatus.innerText = '✕ Broadcast failed: ' + errMsg;
+                            }
+                        }
+                    } catch (_) { /* keep polling on network hiccup */ }
+                }, 3000);
             } else {
                 // Not yet broadcast (or previously failed) — enable
                 btnBroadcastGist.disabled = false;
@@ -1831,7 +1880,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                         broadcastStatus.innerText = '📡 Broadcast queued — waiting for GitHub response...';
                     }
 
-                    // Poll every 3 s, up to 20 attempts (~1 min), for the backend goroutine to finish
+                    // Poll every 3 s, up to 40 attempts (~2 min), to cover the backend's
+                    // worst-case exponential backoff total (10+20+40+80+160 = 310s max,
+                    // but most failures resolve within the first 1-2 retries, ~60s).
+                    // A longer window prevents the UI from re-enabling the button while
+                    // a backend goroutine is still retrying, which would cause duplicates.
                     let pollCount = 0;
                     const pollInterval = setInterval(async () => {
                         pollCount++;
@@ -1867,7 +1920,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                                     badge.addEventListener('click', (e) => { e.stopPropagation(); window.open(gistPub.remote_url, '_blank'); });
                                     badgeEl.appendChild(badge);
                                 }
-                            } else if (gistPub.status === 'failed' || pollCount >= 20) {
+                            } else if (gistPub.status === 'failed' || pollCount >= 40) {
                                 clearInterval(pollInterval);
                                 if (activeVcId === polledVcId && btnBroadcastGist) {
                                     btnBroadcastGist.disabled = false;
@@ -1876,7 +1929,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                                     btnBroadcastGist.style.cursor = 'pointer';
                                 }
                                 if (broadcastStatus && activeVcId === polledVcId) {
-                                    const errMsg = gistPub.last_error || (pollCount >= 20 ? 'Timed out — check console for details' : 'Unknown error');
+                                    const errMsg = gistPub.last_error || (pollCount >= 40 ? 'Timed out — check console for details' : 'Unknown error');
                                     broadcastStatus.style.background = 'rgba(255,85,0,0.08)';
                                     broadcastStatus.style.color = 'var(--warning)';
                                     broadcastStatus.style.border = '1px solid rgba(255,85,0,0.4)';

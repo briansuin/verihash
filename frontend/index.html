@@ -472,8 +472,58 @@
                     </div>
                 </div>
 
+                <!-- Public Profile -->
+                <div class="modal-section" style="margin-top: 15px;">
+                    <div class="modal-section-title"
+                        style="display: flex; justify-content: space-between; align-items: center;">
+                        <span>👤 PUBLIC PROFILE</span>
+                        <span id="profile-index-link-badge" style="display:none; font-size: 0.6rem;">
+                            <a id="profile-index-link" href="#" target="_blank"
+                                style="color: #00ffcc; text-decoration: none;">[ VIEW INDEX GIST ↗ ]</a>
+                        </span>
+                    </div>
+                    <div class="modal-section-desc">Optional public identity fields written to your
+                        <code style="color:#00ffcc; font-size:0.7rem;">verihash_profile_index.json</code>
+                        Gist. All fields are opt-in — leave blank to omit.</div>
 
+                    <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <label style="font-size: 0.7rem; color: #888; width: 60px; flex-shrink: 0;">NAME</label>
+                            <input type="text" id="profile-name"
+                                placeholder="Your public display name..."
+                                style="flex: 1; padding: 5px 10px; font-size: 0.78rem; background: rgba(0,0,0,0.3); border: 1px solid rgba(0,255,204,0.3); color: var(--primary); outline: none; font-family: var(--font-mono);">
+                        </div>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <label style="font-size: 0.7rem; color: #888; width: 60px; flex-shrink: 0;">WEBSITE</label>
+                            <input type="text" id="profile-website"
+                                placeholder="https://your-site.com"
+                                style="flex: 1; padding: 5px 10px; font-size: 0.78rem; background: rgba(0,0,0,0.3); border: 1px solid rgba(0,255,204,0.3); color: var(--primary); outline: none; font-family: var(--font-mono);">
+                        </div>
+                    </div>
 
+                    <!-- Custom key-value fields -->
+                    <div style="margin-top: 12px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                            <span style="font-size: 0.68rem; color: #888;">// CUSTOM FIELDS</span>
+                            <button class="cyber-btn sm" id="btn-add-profile-field"
+                                style="font-size: 0.6rem; padding: 2px 8px;">[ + ADD FIELD ]</button>
+                        </div>
+                        <div id="profile-custom-fields"
+                            style="display: flex; flex-direction: column; gap: 6px; min-height: 24px;">
+                            <!-- Rows rendered by JS -->
+                        </div>
+                        <div id="profile-custom-empty"
+                            style="font-size: 0.72rem; color: #555; font-style: italic; margin-top: 4px;">
+                            No custom fields. Click [ + ADD FIELD ] to add email, LinkedIn, etc.
+                        </div>
+                    </div>
+
+                    <div style="display: flex; align-items: center; gap: 10px; margin-top: 12px;">
+                        <button class="cyber-btn sm" id="btn-save-profile"
+                            style="font-size: 0.65rem; padding: 4px 14px;">[ SAVE PROFILE ]</button>
+                        <span id="profile-save-feedback" style="font-size: 0.68rem; color: #888;"></span>
+                    </div>
+                </div>
 
                 <!-- Danger Zone: Wipe Identity -->
                 <div class="modal-section" style="border-top: 1px dashed rgba(255, 100, 100, 0.3); padding-top: 20px; margin-top: 20px; text-align: center;">

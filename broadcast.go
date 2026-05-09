@@ -600,6 +600,7 @@ type ProfileIndex struct {
 	DocumentType     string                   `json:"document_type"`
 	GeneratedBy      string                   `json:"generated_by"`
 	GeneratorVersion string                   `json:"generator_version"`
+	SourceURL        string                   `json:"source_url"`
 	DID              string                   `json:"did"`
 	DisplayName      string                   `json:"display_name"`
 	Profile          ProfileInfo              `json:"profile"`
@@ -638,10 +639,11 @@ func (db *VeriHashDB) GenerateProfileIndex(did string) (*ProfileIndex, error) {
 	defer rows.Close()
 
 	index := &ProfileIndex{
-		SchemaVersion:    "0.2",
+		SchemaVersion:    "0.3",
 		DocumentType:     "VeriHashPublicRootIndex",
-		GeneratedBy:      "VeriHash Nexus",
-		GeneratorVersion: "0.3",
+		GeneratedBy:      "VeriHash",
+		GeneratorVersion: "0.4.1",
+		SourceURL:        "https://github.com/briansuin/verihash",
 		DID:              did,
 		UpdatedAt:        time.Now().UTC().Format(time.RFC3339),
 		RecentVCs:        []ProfileIndexVC{},

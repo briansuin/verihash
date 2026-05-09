@@ -76,12 +76,18 @@ func initDB() error {
 	db.Exec(`ALTER TABLE session_credentials ADD COLUMN revoked_at INTEGER DEFAULT 0;`)
 	db.Exec(`ALTER TABLE session_credentials ADD COLUMN revoke_signature TEXT DEFAULT '';`)
 
-	// Startup cleanup: remove orphaned 'pending' broadcast records that were never
-	// attempted (attempt_count=0, remote_id=''). These are left over from a buggy
-	// version of Del-Gist that set status='pending' instead of deleting the row.
-	// Legitimate pending records from an in-flight BroadcastVC call are also safe
-	// to remove on restart — the goroutine that drives them dies with the process,
-	// so the user would need to re-trigger Broadcast anyway.
+	// Startup cleanup: remove orphaned broadcast records left over when the process
+	// was killed mid-flight. Both 'pending' (never attempted) and 'publishing'
+	// (killed mid-attempt) records are safe to revert to 'failed' on restart —
+	// the goroutines that drove them died with the process, so the user must
+	// re-trigger Broadcast manually anyway.
+	// Revert 'publishing' → 'failed' so the UI shows a retry button instead of
+	// locking the button in the "BROADCASTING..." state forever.
+	db.Exec(`UPDATE broadcast_publications
+		SET status = 'failed', last_error = 'Interrupted by process restart'
+		WHERE status = 'publishing';`)
+	// Also remove truly orphaned 'pending' rows that were never attempted at all
+	// (these come from a now-fixed Del-Gist bug that left stale pending rows).
 	db.Exec(`DELETE FROM broadcast_publications
 		WHERE status = 'pending' AND attempt_count = 0 AND remote_id = '';`)
 
