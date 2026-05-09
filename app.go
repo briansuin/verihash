@@ -772,6 +772,13 @@ func (a *App) RestoreDataFromSync() string {
 	}
 	a.db = newDB
 
+	// ── Step 3b: Re-wire broadcastManager to the new DB handle ──────────────
+	// BroadcastManager holds its own db pointer internally. If we don't update
+	// it here, all subsequent BroadcastVC / Revoke / status writes will target
+	// the closed old connection and return "database is closed" errors.
+	if a.broadcastManager != nil {
+		a.broadcastManager.db = a.db
+	}
 
 	// ── Step 4: Restart IndexUpdater with the new DB handle ──
 	cfg := a.LoadConfig()
