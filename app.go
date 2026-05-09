@@ -797,9 +797,6 @@ func (a *App) RestoreDataFromSync() string {
 }
 
 
-func (a *App) GenerateHistoricReports() {
-}
-
 // GenerateHTMLReport manually triggers the professional HTML report generation
 // for a historical credential stored in the ledger.
 func (a *App) GenerateHTMLReport(vcID string, customTitle string) string {
