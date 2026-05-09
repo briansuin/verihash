@@ -943,7 +943,7 @@ func (iu *IndexUpdater) doUpdate() {
 	var identity struct {
 		DID string `json:"did"`
 	}
-	if idBytes, err := os.ReadFile("node_identity.json"); err == nil {
+	if idBytes, err := os.ReadFile(DataPath("node_identity.json")); err == nil {
 		json.Unmarshal(idBytes, &identity)
 	}
 	if identity.DID == "" {
