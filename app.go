@@ -1259,18 +1259,19 @@ func (a *App) WipeIdentity() string {
 		a.indexUpdater = nil
 	}
 
-	// 4. Delete local files
+	// 4. Delete local files — always use the absolute path variables so that
+	// the correct AppData location is targeted regardless of working directory.
 	filesToDelete := []string{
 		identityFile,
+		identityFile + ".bak",
 		privateKeyFile,
 		privateKeyFile + ".bak",
-		"proof_of_work.db",
-		"proof_of_work.db-shm",
-		"proof_of_work.db-wal",
-		"proof_of_work.db.bak",
-		"verihash_ledger.db", // Only deleting the local root copy, cloud backups are untouched.
+		dbFile,
+		dbFile + "-shm",
+		dbFile + "-wal",
+		dbFile + ".bak",
 		configPath,
-		configPath+".bak",
+		configPath + ".bak",
 	}
 
 	for _, f := range filesToDelete {
