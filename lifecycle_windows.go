@@ -87,6 +87,7 @@ func setupSystemTray(a *App) {
 		systray.SetOnClick(func(menu systray.IMenu) {
 			if a.ctx != nil {
 				runtime.WindowShow(a.ctx)
+				a.windowVisible = true
 			}
 		})
 
@@ -99,6 +100,7 @@ func setupSystemTray(a *App) {
 		mShow.Click(func() {
 			if a.ctx != nil {
 				runtime.WindowShow(a.ctx)
+				a.windowVisible = true
 			}
 		})
 
@@ -119,8 +121,15 @@ func setupSystemTray(a *App) {
 	start()
 }
 
-// shutdownTray removes the tray icon when Wails is shutting down.
+// shutdownTray saves the final window state then removes the tray icon.
 func (a *App) shutdownTray(ctx context.Context) {
+	// Persist window geometry and hidden flag before the process exits.
+	// At shutdown the window may already be hidden (HideWindowOnClose), so
+	// we pass the tracked a.windowVisible flag rather than querying the runtime
+	// (which can return stale values after the window has been hidden).
+	if a.ctx != nil {
+		a.SaveWindowState(!a.windowVisible)
+	}
 	if systrayEnd != nil {
 		systrayEnd()
 	}

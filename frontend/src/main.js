@@ -1,4 +1,4 @@
-import { SelectDirectory, SaveConfig, StartWatchdog, TriggerMint, GetDID, LoadConfig, GetWorkspaceFiles, GetLedger, ExportCredentialJSON, RestoreDataFromSync, GenerateHTMLReport, RevokeCredential, VerifyChain, VerifyCredential, SaveToFile, GetWalletStatus, UnlockWallet, InitWallet, MigrateWallet, GetMnemonic, LockVault, ToggleAutoStart, IsAutoStartEnabled, ImportMnemonic, UpdateIgnoredPatterns, SaveSessionIgnores, ResolveDroppedPath, BroadcastVC, GetBroadcastStatus, ResetBroadcastVC, DeleteBroadcastVC, GetProfileIndex, GetProfileInfo, SaveProfileInfo, GetAppVersion, CheckForUpdate, ApplyUpdate, WipeIdentity, RestartApp } from '../wailsjs/go/main/App';
+import { SelectDirectory, SaveConfig, StartWatchdog, TriggerMint, GetDID, LoadConfig, GetWorkspaceFiles, GetLedger, ExportCredentialJSON, RestoreDataFromSync, GenerateHTMLReport, RevokeCredential, VerifyChain, VerifyCredential, SaveToFile, GetWalletStatus, UnlockWallet, InitWallet, MigrateWallet, GetMnemonic, LockVault, ToggleAutoStart, IsAutoStartEnabled, ImportMnemonic, UpdateIgnoredPatterns, SaveSessionIgnores, ResolveDroppedPath, BroadcastVC, GetBroadcastStatus, ResetBroadcastVC, DeleteBroadcastVC, GetProfileIndex, GetProfileInfo, SaveProfileInfo, GetAppVersion, CheckForUpdate, ApplyUpdate, WipeIdentity, RestartApp, SaveWindowState } from '../wailsjs/go/main/App';
 import { EventsOn, WindowGetSize, WindowSetSize, OnFileDrop } from '../wailsjs/runtime/runtime';
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -1246,9 +1246,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         matrixCanvas.style.opacity = '0';
     }
 
+    // Debounced resize handler: updates matrix canvas and persists window size.
+    // 800 ms debounce avoids flooding the backend while the user drags the edge.
+    let _resizeTimer = null;
     window.addEventListener('resize', () => {
         matrixCanvas.width = window.innerWidth;
         matrixCanvas.height = window.innerHeight;
+        clearTimeout(_resizeTimer);
+        _resizeTimer = setTimeout(() => {
+            SaveWindowState(false).catch(() => {});
+        }, 800);
     });
 
     // ======== P1: DID ONE-CLICK COPY ========

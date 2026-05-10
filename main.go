@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 
 	"github.com/wailsapp/wails/v2"
@@ -41,6 +42,14 @@ func main() {
 		BackgroundColour:  &options.RGBA{R: 27, G: 38, B: 54, A: 1},
 		OnStartup:        app.startup,
 		OnShutdown:       app.shutdownTray,
+		// OnBeforeClose is triggered when the user clicks the title-bar X button.
+		// Because HideWindowOnClose:true intercepts the close and hides the window
+		// instead of quitting, we use this hook to mark the window as hidden so
+		// shutdownTray() persists the correct visibility state on next actual exit.
+		OnBeforeClose: func(ctx context.Context) bool {
+			app.windowVisible = false
+			return false // return false = allow the hide-to-tray behaviour
+		},
 		Bind: []interface{}{
 			app,
 		},

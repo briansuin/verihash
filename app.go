@@ -46,6 +46,12 @@ type Config struct {
 	ProfileName    string            `json:"profile_name"`
 	ProfileWebsite string            `json:"profile_website"`
 	ProfileCustom  map[string]string `json:"profile_custom"`
+	// Window state — persisted so the app restores its last size/position
+	WindowWidth    int  `json:"window_width"`    // 0 = use default
+	WindowHeight   int  `json:"window_height"`
+	WindowX        int  `json:"window_x"`
+	WindowY        int  `json:"window_y"`
+	WindowHidden   bool `json:"window_hidden"`   // true = was in tray when last closed
 }
 
 // LedgerEntry is a summary row of a past minting session
@@ -79,11 +85,12 @@ type App struct {
 	ignoredPatterns  []string
 	broadcastManager *BroadcastManager
 	indexUpdater     *IndexUpdater // Phase 4.5: auto-syncs the public root index Gist
+	windowVisible    bool          // tracks whether the main window is currently shown
 }
 
 // NewApp creates a new App application struct
 func NewApp() *App {
-	return &App{}
+	return &App{windowVisible: true} // assume visible until proven otherwise
 }
 
 // startup is called when the app starts. The context is saved
@@ -138,15 +145,30 @@ func (a *App) startup(ctx context.Context) {
 		a.privKey = privKey
 	}
 
-	// If launched by Windows at boot (--autostart flag), hide the window so the app
-	// boots silently into the system tray without interrupting the user's login session.
-	if isAutoStartLaunch() {
+	// ── Restore window geometry ──────────────────────────────────────────────
+	// Load config once here so window geometry and visibility can be applied
+	// before any subsystem starts (broadcast, cloud sync, etc.).
+	cfg := a.LoadConfig()
+
+	// Apply saved size and position BEFORE deciding visibility, so the window
+	// appears in the right place when shown.
+	if cfg.WindowWidth > 0 && cfg.WindowHeight > 0 {
+		runtime.WindowSetSize(ctx, cfg.WindowWidth, cfg.WindowHeight)
+	}
+	if cfg.WindowX != 0 || cfg.WindowY != 0 {
+		runtime.WindowSetPosition(ctx, cfg.WindowX, cfg.WindowY)
+	}
+
+	// ── Restore visibility state ──────────────────────────────────────────────
+	// Hide if: (a) launched by Windows autostart at boot, OR
+	//          (b) the window was hidden when the user last closed the app.
+	if isAutoStartLaunch() || cfg.WindowHidden {
 		runtime.WindowHide(ctx)
+		a.windowVisible = false
+	} else {
+		a.windowVisible = true
 	}
 	runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[SYSTEM] Booting VeriHash Core...", "type": "sys"})
-
-	// 3. Load config so cloudSyncDirs are available at startup
-	cfg := a.LoadConfig()
 
 	// 4. Initialize BroadcastManager with registered channels
 	a.broadcastManager = NewBroadcastManager(a.db)
@@ -168,6 +190,31 @@ func (a *App) startup(ctx context.Context) {
 	// 5. Sync DB snapshot to all bound cloud directories on startup
 	if len(a.cloudSyncDirs) > 0 {
 		go a.syncDBToCloud()
+	}
+}
+
+// SaveWindowState is called by the frontend (on resize / before hide) to
+// persist the current window geometry and visibility flag to config.
+// This is a Wails-bound method so the JS side can call it without Go knowing
+// the exact pixel values — the runtime reads them directly here.
+func (a *App) SaveWindowState(hidden bool) {
+	cfg := a.LoadConfig()
+	w, h := runtime.WindowGetSize(a.ctx)
+	x, y := runtime.WindowGetPosition(a.ctx)
+	// Sanity-check: ignore zero/tiny values that indicate the window is
+	// minimised or not yet laid out (Wails returns 0,0 in those states).
+	if w > 200 && h > 200 {
+		cfg.WindowWidth = w
+		cfg.WindowHeight = h
+	}
+	// Only persist non-zero positions (0,0 means top-left which is valid,
+	// so accept it; but skip if the window is off-screen somehow).
+	cfg.WindowX = x
+	cfg.WindowY = y
+	cfg.WindowHidden = hidden
+	a.windowVisible = !hidden
+	if out, err := json.MarshalIndent(cfg, "", "  "); err == nil {
+		os.WriteFile(configPath, out, 0644)
 	}
 }
 
