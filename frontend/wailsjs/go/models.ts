@@ -52,6 +52,11 @@ export namespace main {
 	    profile_name: string;
 	    profile_website: string;
 	    profile_custom: Record<string, string>;
+	    window_width: number;
+	    window_height: number;
+	    window_x: number;
+	    window_y: number;
+	    window_hidden: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Config(source);
@@ -76,6 +81,11 @@ export namespace main {
 	        this.profile_name = source["profile_name"];
 	        this.profile_website = source["profile_website"];
 	        this.profile_custom = source["profile_custom"];
+	        this.window_width = source["window_width"];
+	        this.window_height = source["window_height"];
+	        this.window_x = source["window_x"];
+	        this.window_y = source["window_y"];
+	        this.window_hidden = source["window_hidden"];
 	    }
 	}
 	export class LedgerEntry {

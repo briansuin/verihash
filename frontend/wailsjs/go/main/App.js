@@ -26,10 +26,6 @@ export function GenerateHTMLReport(arg1, arg2) {
   return window['go']['main']['App']['GenerateHTMLReport'](arg1, arg2);
 }
 
-export function GenerateHistoricReports() {
-  return window['go']['main']['App']['GenerateHistoricReports']();
-}
-
 export function GetAppVersion() {
   return window['go']['main']['App']['GetAppVersion']();
 }
@@ -128,6 +124,10 @@ export function SaveSessionIgnores(arg1, arg2) {
 
 export function SaveToFile(arg1, arg2) {
   return window['go']['main']['App']['SaveToFile'](arg1, arg2);
+}
+
+export function SaveWindowState(arg1) {
+  return window['go']['main']['App']['SaveWindowState'](arg1);
 }
 
 export function SelectDirectory() {

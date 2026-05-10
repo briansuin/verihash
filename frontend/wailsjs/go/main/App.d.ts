@@ -14,8 +14,6 @@ export function ExportCredentialJSON(arg1:string):Promise<string>;
 
 export function GenerateHTMLReport(arg1:string,arg2:string):Promise<string>;
 
-export function GenerateHistoricReports():Promise<void>;
-
 export function GetAppVersion():Promise<string>;
 
 export function GetBroadcastStatus(arg1:string):Promise<Array<main.BroadcastPublication>>;
@@ -65,6 +63,8 @@ export function SaveProfileInfo(arg1:string,arg2:string,arg3:string):Promise<str
 export function SaveSessionIgnores(arg1:string,arg2:Array<string>):Promise<string>;
 
 export function SaveToFile(arg1:string,arg2:string):Promise<string>;
+
+export function SaveWindowState(arg1:boolean):Promise<void>;
 
 export function SelectDirectory():Promise<string>;
 
