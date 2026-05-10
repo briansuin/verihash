@@ -1,6 +1,6 @@
-# VeriHash
+#  VeriHash
 
-**A local-first, AI-readable work credential system for knowledge workers.**
+**A local-first, AI-readable work credential system for high-trust knowledge workers.**
 
 VeriHash is an experimental tool for preserving a long-term, machine-readable trail of professional work.
 
@@ -63,7 +63,7 @@ VeriHash is:
 - a tool for building an **evidence-based personal brand**;
 - an experiment in making invisible knowledge work machine-readable.
 
-It is especially designed for knowledge workers such as:
+It is especially designed for high-trust knowledge workers such as:
 
 - lawyers;
 - legal technologists;
