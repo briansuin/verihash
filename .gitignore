@@ -45,3 +45,9 @@ __pycache__/
 TEST_DIR/
 test_workspace/
 test_files/
+
+# Private / External Repositories
+# VerihashOrg is now open-source, but ignore data and compiled server binaries
+VerihashOrg/data/
+VerihashOrg/node.exe
+VerihashOrg/verihash-node

@@ -45,6 +45,7 @@ export namespace main {
 	    ignored_patterns: string[];
 	    session_ignores: Record<string, Array<string>>;
 	    github_pat: string;
+	    active_channels: string[];
 	    index_gist_id: string;
 	    index_gist_url: string;
 	    display_name: string;
@@ -74,6 +75,7 @@ export namespace main {
 	        this.ignored_patterns = source["ignored_patterns"];
 	        this.session_ignores = source["session_ignores"];
 	        this.github_pat = source["github_pat"];
+	        this.active_channels = source["active_channels"];
 	        this.index_gist_id = source["index_gist_id"];
 	        this.index_gist_url = source["index_gist_url"];
 	        this.display_name = source["display_name"];

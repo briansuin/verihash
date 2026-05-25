@@ -38,6 +38,7 @@ type Config struct {
 	IgnoredPatterns []string            `json:"ignored_patterns"`
 	SessionIgnores  map[string][]string `json:"session_ignores"`
 	GitHubPAT       string              `json:"github_pat"`        // GitHub Personal Access Token (gist scope)
+	ActiveChannels  []string            `json:"active_channels"`   // Enabled broadcast channels (e.g. ["verihash_org", "gist"])
 	IndexGistID     string              `json:"index_gist_id"`     // Phase 4.5: pinned root index Gist ID (stable anchor)
 	IndexGistURL    string              `json:"index_gist_url"`    // Phase 4.5: public URL of the root index Gist
 	DisplayName     string              `json:"display_name"`      // Human-readable name shown in the public index
@@ -172,11 +173,34 @@ func (a *App) startup(ctx context.Context) {
 
 	// 4. Initialize BroadcastManager with registered channels
 	a.broadcastManager = NewBroadcastManager(a.db)
-	if cfg.GitHubPAT != "" {
-		gistBroadcaster := NewGitHubGistBroadcaster(cfg.GitHubPAT)
-		a.broadcastManager.RegisterBroadcaster(gistBroadcaster)
-		runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[BROADCAST] GitHub Gist channel registered.", "type": "sys"})
+	if a.privKey != nil {
+		a.broadcastManager.SetKeys(a.privKey, a.pubKey)
+	}
 
+	// Determine active channels from config; default to verihash_org if none saved.
+	activeChannels := cfg.ActiveChannels
+	if len(activeChannels) == 0 {
+		activeChannels = []string{"verihash_org"}
+	}
+
+	var gistBroadcaster *GitHubGistBroadcaster
+	for _, ch := range activeChannels {
+		switch ch {
+		case "verihash_org":
+			if a.privKey != nil {
+				a.broadcastManager.RegisterBroadcaster(NewVeriHashNodeBroadcaster("", a.privKey, a.pubKey))
+				runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[BROADCAST] VeriHash.org Relay channel registered.", "type": "sys"})
+			}
+		case "gist":
+			if cfg.GitHubPAT != "" {
+				gistBroadcaster = NewGitHubGistBroadcaster(cfg.GitHubPAT)
+				a.broadcastManager.RegisterBroadcaster(gistBroadcaster)
+				runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[BROADCAST] GitHub Gist channel registered.", "type": "sys"})
+			}
+		}
+	}
+
+	if gistBroadcaster != nil {
 		// Phase 4.5: Start the IndexUpdater background worker.
 		// It listens for signals from Mint and Revoke and serially syncs the
 		// public root index Gist, debouncing burst updates automatically.
@@ -204,7 +228,9 @@ func (a *App) SaveWindowState(hidden bool) {
 	// Sanity-check: ignore zero/tiny values that indicate the window is
 	// minimised or not yet laid out (Wails returns 0,0 in those states).
 	if w > 200 && h > 200 {
-		cfg.WindowWidth = w
+		if w != 340 && w != 800 {
+			cfg.WindowWidth = w
+		}
 		cfg.WindowHeight = h
 	}
 	// Only persist non-zero positions (0,0 means top-left which is valid,
@@ -285,6 +311,23 @@ func (a *App) UnlockWallet(password string) string {
 	// Securely park token in OS keychain for auto-boot
 	keyring.Set("VeriHash", "vault_password", password)
 
+	// Now that privKey is available, register the VeriHashNodeBroadcaster if it's
+	// an active channel. This handles the case where startup() skipped registration
+	// because the wallet was still locked at boot time.
+	if a.broadcastManager != nil {
+		var cfg Config
+		if cfgBytes, err := os.ReadFile(configPath); err == nil {
+			json.Unmarshal(cfgBytes, &cfg)
+		}
+		for _, ch := range cfg.ActiveChannels {
+			if ch == "verihash_org" {
+				a.broadcastManager.RegisterBroadcaster(NewVeriHashNodeBroadcaster("", privKey, pubKey))
+				log.Println("[BROADCAST] VeriHash.org Relay channel registered after wallet unlock.")
+				break
+			}
+		}
+	}
+
 	did := pubKeyToDIDKey(pubKey)
 	runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": "[SYSTEM] Identity Loaded: " + did[:32] + "...", "type": "sys"})
 	return `{"status": "unlocked", "did": "` + did + `"}`
@@ -357,9 +400,11 @@ func (a *App) LoadConfig() Config {
 		a.baseURL = cfg.BaseURL
 		a.cloudSyncDirs = cfg.CloudSyncDirs
 		a.ignoredPatterns = cfg.IgnoredPatterns
-		// Re-register GitHub Gist broadcaster whenever config reloads
-		if a.broadcastManager != nil && cfg.GitHubPAT != "" {
-			a.broadcastManager.RegisterBroadcaster(NewGitHubGistBroadcaster(cfg.GitHubPAT))
+		// Re-register broadcasters whenever config reloads
+		if a.broadcastManager != nil {
+			if cfg.GitHubPAT != "" {
+				a.broadcastManager.RegisterBroadcaster(NewGitHubGistBroadcaster(cfg.GitHubPAT))
+			}
 		}
 	}
 	return cfg
@@ -436,7 +481,8 @@ func jsonString(s string) string {
 
 // SaveConfig stores the AI and UI configuration in memory and JSON disk.
 // gitHubPAT is stored as-is; pass an empty string to leave the existing PAT unchanged.
-func (a *App) SaveConfig(workspaces []string, engine, modelName, key, baseURL string, cloudSyncDirs []string, gitHubPAT string) string {
+// activeChannels controls which broadcast channels are enabled (e.g. ["verihash_org", "gist"]).
+func (a *App) SaveConfig(workspaces []string, engine, modelName, key, baseURL string, cloudSyncDirs []string, gitHubPAT string, activeChannels []string) string {
 	a.watchDirs = workspaces
 	a.aiEngine = engine
 	a.modelName = modelName
@@ -456,6 +502,11 @@ func (a *App) SaveConfig(workspaces []string, engine, modelName, key, baseURL st
 		pat = existingCfg.GitHubPAT
 	}
 
+	// Default to verihash_org if frontend sends empty list
+	if len(activeChannels) == 0 {
+		activeChannels = []string{"verihash_org"}
+	}
+
 	cfg := Config{
 		Workspaces:      workspaces,
 		AIEngine:        engine,
@@ -467,6 +518,7 @@ func (a *App) SaveConfig(workspaces []string, engine, modelName, key, baseURL st
 		AutoStart:       existingCfg.AutoStart,       // preserve
 		SessionIgnores:  existingCfg.SessionIgnores,  // preserve local filters
 		GitHubPAT:       pat,
+		ActiveChannels:  activeChannels,
 		// Phase 4.5: MUST preserve — losing these would cause IndexUpdater to
 		// re-bootstrap and create a duplicate Index Gist, breaking the stable URL.
 		IndexGistID:  existingCfg.IndexGistID,
@@ -481,18 +533,48 @@ func (a *App) SaveConfig(workspaces []string, engine, modelName, key, baseURL st
 	bytes, _ := json.MarshalIndent(cfg, "", "  ")
 	os.WriteFile(configPath, bytes, 0644)
 
-	// Re-register broadcaster and IndexUpdater with new PAT immediately
-	if a.broadcastManager != nil && pat != "" {
-		gistBroadcaster := NewGitHubGistBroadcaster(pat)
-		a.broadcastManager.RegisterBroadcaster(gistBroadcaster)
-		// Restart IndexUpdater with new broadcaster if it wasn't running before
-		if a.indexUpdater == nil {
-			iu := NewIndexUpdater(a.db, gistBroadcaster, configPath)
-			a.indexUpdater = iu
-			a.broadcastManager.indexUpdater = iu
-			iu.Start()
-		} else {
-			a.indexUpdater.UpdateBroadcaster(gistBroadcaster)
+	// Re-register all broadcasters immediately based on the new active channel list.
+	// This ensures the running app reflects the user's settings without a restart.
+	if a.broadcastManager != nil {
+		var gistBroadcaster *GitHubGistBroadcaster
+		for _, ch := range activeChannels {
+			switch ch {
+			case "verihash_org":
+				if a.privKey != nil {
+					a.broadcastManager.RegisterBroadcaster(NewVeriHashNodeBroadcaster("", a.privKey, a.pubKey))
+					log.Println("[BROADCAST] VeriHash.org Relay channel registered.")
+				}
+			case "gist":
+				if pat != "" {
+					gistBroadcaster = NewGitHubGistBroadcaster(pat)
+					a.broadcastManager.RegisterBroadcaster(gistBroadcaster)
+					log.Println("[BROADCAST] GitHub Gist channel registered.")
+				}
+			}
+		}
+
+		// Remove channels that were deselected by the user.
+		channelSet := make(map[string]bool)
+		for _, ch := range activeChannels {
+			channelSet[ch] = true
+		}
+		if !channelSet["verihash_org"] {
+			delete(a.broadcastManager.broadcasters, "verihash_org")
+		}
+		if !channelSet["gist"] {
+			delete(a.broadcastManager.broadcasters, "gist")
+		}
+
+		// Sync IndexUpdater with current gist broadcaster state.
+		if gistBroadcaster != nil {
+			if a.indexUpdater == nil {
+				iu := NewIndexUpdater(a.db, gistBroadcaster, configPath)
+				a.indexUpdater = iu
+				a.broadcastManager.indexUpdater = iu
+				iu.Start()
+			} else {
+				a.indexUpdater.UpdateBroadcaster(gistBroadcaster)
+			}
 		}
 	}
 
@@ -938,6 +1020,8 @@ func (a *App) RevokeCredential(vcID string) string {
 			RevokedAt:       time.Unix(int64(revokedAt), 0).UTC().Format(time.RFC3339),
 			RevokeSignature: signatureHex,
 			OriginalVCHash:  vcHash,
+			PrevVCHash:      "", // filled by BroadcastVC path; RevokeCredential doesn't need it
+			TombstoneType:   "destroy", // permanent — credential destroyed locally
 		}
 		go func() {
 			for channel := range a.broadcastManager.broadcasters {
@@ -1076,6 +1160,46 @@ func (a *App) BroadcastVC(vcID string) string {
 	return `{"status": "queued"}`
 }
 
+// SyncChainToNode syncs ALL local credentials to the verihash_org node,
+// including destroyed ones (sent as tombstones). Use this to fill chain gaps
+// after a fresh install or after credentials were revoked before being published.
+// Runs sequentially with a 150ms delay between each to avoid overloading.
+func (a *App) SyncChainToNode() string {
+	if a.broadcastManager == nil {
+		return `{"error": "Broadcast manager not initialized"}`
+	}
+	rows, err := a.db.conn.Query(
+		`SELECT vc_id FROM session_credentials ORDER BY timestamp ASC`,
+	)
+	if err != nil {
+		return `{"error": "DB query failed: ` + strings.ReplaceAll(err.Error(), `"`, `'`) + `"}`
+	}
+	defer rows.Close()
+
+	var vcIDs []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			vcIDs = append(vcIDs, id)
+		}
+	}
+
+	go func() {
+		for _, id := range vcIDs {
+			// Node-only broadcast — skips Gist to avoid rate limits
+			a.broadcastManager.BroadcastVCToNode(id)
+			time.Sleep(150 * time.Millisecond)
+		}
+		log.Printf("[SYNC] SyncChainToNode complete: %d credentials processed", len(vcIDs))
+		runtime.EventsEmit(a.ctx, "log", map[string]string{
+			"msg":  fmt.Sprintf("[SYNC] Chain sync complete: %d credentials sent to node", len(vcIDs)),
+			"type": "sys",
+		})
+	}()
+
+	return fmt.Sprintf(`{"status": "started", "count": %d}`, len(vcIDs))
+}
+
 // GetBroadcastStatus returns the broadcast status for all channels for a given vc_id.
 // The frontend uses this to render per-channel status badges on each Ledger card.
 func (a *App) GetBroadcastStatus(vcID string) []BroadcastPublication {
@@ -1100,10 +1224,11 @@ func (a *App) ResetBroadcastVC(vcID, channel string) string {
 	return `{"status": "reset"}`
 }
 
-// DeleteBroadcastVC deletes the remote artifact (e.g. the GitHub Gist) for the
-// given VC and channel, then fully wipes the broadcast DB record so the user can
-// re-broadcast from scratch. Unlike RevokeCredential, the local credential itself
-// is NOT affected — it stays valid in the Ledger.
+// DeleteBroadcastVC withdraws the publication of the given VC from the specified
+// channel, then wipes the broadcast DB record so the user can re-broadcast from
+// scratch. Unlike RevokeCredential, the local credential itself is NOT affected —
+// it stays valid in the Ledger. For verihash_org this sends a "withdraw" tombstone
+// so the server preserves the block in the chain with status 'withdrawn'.
 func (a *App) DeleteBroadcastVC(vcID, channel string) string {
 	if a.broadcastManager == nil {
 		return `{"error": "Broadcast manager not initialized"}`
@@ -1113,7 +1238,7 @@ func (a *App) DeleteBroadcastVC(vcID, channel string) string {
 		return `{"error": "No broadcaster registered for channel: ` + channel + `"}`
 	}
 
-	// Look up the remote_id to delete
+	// Look up the remote_id to delete / withdraw
 	pubs, err := a.db.GetBroadcastsByVC(vcID)
 	if err != nil {
 		return `{"error": "DB lookup failed: ` + strings.ReplaceAll(err.Error(), `"`, `'`) + `"}`
@@ -1129,18 +1254,49 @@ func (a *App) DeleteBroadcastVC(vcID, channel string) string {
 		return `{"error": "No published artifact found for this credential"}`
 	}
 
-	// Delete the remote artifact (404 = already gone, treat as success)
-	if err := b.Delete(remoteID); err != nil {
-		return `{"error": "` + strings.ReplaceAll(err.Error(), `"`, `'`) + `"}`
+	if channel == "verihash_org" {
+		// verihash_org uses blockchain semantics: send a withdraw tombstone instead
+		// of physically deleting, so the chain block is preserved on the server.
+		if a.walletIsLocked() {
+			return `{"error": "Wallet is locked. Unlock your vault before withdrawing."}`
+		}
+		var vcHash, prevVCHash string
+		_ = a.db.conn.QueryRow(
+			`SELECT COALESCE(vc_hash,''), COALESCE(prev_vc_hash,'') FROM session_credentials WHERE vc_id = ?`, vcID,
+		).Scan(&vcHash, &prevVCHash)
+		did := a.GetDID()
+		revokedAt := time.Now().UTC().Format(time.RFC3339)
+		payloadStr := fmt.Sprintf("VERIHASH_WITHDRAW|%s|%s|%s", vcID, vcHash, did)
+		sigBytes := ed25519.Sign(a.privKey, []byte(payloadStr))
+		tombstone := TombstonePayload{
+			VCID:            vcID,
+			IssuerDID:       did,
+			RevokedAt:       revokedAt,
+			RevokeSignature: hex.EncodeToString(sigBytes),
+			OriginalVCHash:  vcHash,
+			PrevVCHash:      prevVCHash,
+			TombstoneType:   "withdraw",
+		}
+		if _, err := b.Revoke(remoteID, tombstone); err != nil && !strings.Contains(err.Error(), "404") {
+			log.Printf("[WITHDRAW] Failed to send withdraw tombstone for (%s, %s): %v", vcID[:min(20, len(vcID))]+"...", channel, err)
+			// Non-fatal: still clear local record
+		} else {
+			log.Printf("[WITHDRAW] ✓ withdraw tombstone sent for (%s, %s)", vcID[:min(20, len(vcID))]+"...", channel)
+		}
+	} else {
+		// For other channels (e.g. Gist): physically delete the remote artifact
+		if err := b.Delete(remoteID); err != nil {
+			return `{"error": "` + strings.ReplaceAll(err.Error(), `"`, `'`) + `"}`
+		}
 	}
 
-	// Fully wipe the broadcast record (including remote_id) so next broadcast creates fresh
+	// Fully wipe the broadcast record so next broadcast creates fresh
 	if err := a.db.ClearBroadcastRecord(vcID, channel); err != nil {
-		log.Printf("[BROADCAST] Warning: Gist deleted but DB clear failed: %v", err)
+		log.Printf("[BROADCAST] Warning: record cleared locally but DB clear failed: %v", err)
 	}
 
-	log.Printf("[BROADCAST] Gist deleted and record cleared for (%s, %s)", vcID[:min(20, len(vcID))]+"...", channel)
-	return `{"status": "deleted"}`
+	log.Printf("[BROADCAST] Withdrawal complete for (%s, %s)", vcID[:min(20, len(vcID))]+"...", channel)
+	return `{"status": "withdrawn"}`
 }
 
 // GetProfileIndex generates and returns the public root index JSON as a string.
@@ -1217,6 +1373,16 @@ func (a *App) SaveProfileInfo(name, website string, customJSON string) string {
 	// Trigger index update so the change appears in the public Gist promptly
 	if a.indexUpdater != nil {
 		a.indexUpdater.Signal()
+	}
+
+	// Propagate profile update eagerly to all active broadcast channels
+	profileBytes, err := json.Marshal(map[string]interface{}{
+		"name":    existingCfg.ProfileName,
+		"website": existingCfg.ProfileWebsite,
+		"custom":  existingCfg.ProfileCustom,
+	})
+	if err == nil && a.broadcastManager != nil {
+		a.broadcastManager.PublishProfile(profileBytes)
 	}
 
 	log.Printf("[PROFILE] Public profile updated: name=%q website=%q custom_fields=%d",
@@ -1353,4 +1519,41 @@ func (a *App) WipeIdentity() string {
 	return `{"status": "success"}`
 }
 
+// NukeRemoteCredentials permanently revokes or deletes all published credentials
+// from the selected remote platforms. It requires the vault password as a second
+// confirmation to prevent accidental purges.
+func (a *App) NukeRemoteCredentials(channels []string, password string) string {
+	if a.walletIsLocked() {
+		return `{"error": "Wallet is locked."}`
+	}
 
+	// Re-verify the password for encrypted wallets before executing
+	if a.walletStatus == WalletStatusEncrypted {
+		encryptedPrivKey, err := os.ReadFile(privateKeyFile)
+		if err != nil {
+			return `{"error": "Failed to read encrypted key."}`
+		}
+		_, err = decryptBundleData(encryptedPrivKey, password)
+		if err != nil {
+			return `{"error": "Invalid password."}`
+		}
+	}
+
+	if a.broadcastManager == nil {
+		return `{"error": "Broadcast manager not initialized."}`
+	}
+
+	// Read the GitHub PAT from disk so Gist deletion works even if Gist isn't
+	// currently registered as an active channel.
+	var cfg Config
+	if cfgBytes, err := os.ReadFile(configPath); err == nil {
+		json.Unmarshal(cfgBytes, &cfg)
+	}
+
+	count, err := a.broadcastManager.NukeRemote(channels, a.privKey, a.pubKey, a.GetDID(), cfg.GitHubPAT)
+	if err != nil {
+		return fmt.Sprintf(`{"error": %q}`, err.Error())
+	}
+
+	return fmt.Sprintf(`{"status": "success", "count": %d}`, count)
+}

@@ -90,6 +90,10 @@ export function MigrateWallet(arg1, arg2) {
   return window['go']['main']['App']['MigrateWallet'](arg1, arg2);
 }
 
+export function NukeRemoteCredentials(arg1, arg2) {
+  return window['go']['main']['App']['NukeRemoteCredentials'](arg1, arg2);
+}
+
 export function ResetBroadcastVC(arg1, arg2) {
   return window['go']['main']['App']['ResetBroadcastVC'](arg1, arg2);
 }
@@ -110,8 +114,8 @@ export function RevokeCredential(arg1) {
   return window['go']['main']['App']['RevokeCredential'](arg1);
 }
 
-export function SaveConfig(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
-  return window['go']['main']['App']['SaveConfig'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+export function SaveConfig(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
+  return window['go']['main']['App']['SaveConfig'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
 }
 
 export function SaveProfileInfo(arg1, arg2, arg3) {
@@ -136,6 +140,10 @@ export function SelectDirectory() {
 
 export function StartWatchdog() {
   return window['go']['main']['App']['StartWatchdog']();
+}
+
+export function SyncChainToNode() {
+  return window['go']['main']['App']['SyncChainToNode']();
 }
 
 export function ToggleAutoStart(arg1) {

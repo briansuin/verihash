@@ -1,4 +1,4 @@
-import { SelectDirectory, SaveConfig, StartWatchdog, TriggerMint, GetDID, LoadConfig, GetWorkspaceFiles, GetLedger, ExportCredentialJSON, RestoreDataFromSync, GenerateHTMLReport, RevokeCredential, VerifyChain, VerifyCredential, SaveToFile, GetWalletStatus, UnlockWallet, InitWallet, MigrateWallet, GetMnemonic, LockVault, ToggleAutoStart, IsAutoStartEnabled, ImportMnemonic, UpdateIgnoredPatterns, SaveSessionIgnores, ResolveDroppedPath, BroadcastVC, GetBroadcastStatus, ResetBroadcastVC, DeleteBroadcastVC, GetProfileIndex, GetProfileInfo, SaveProfileInfo, GetAppVersion, CheckForUpdate, ApplyUpdate, WipeIdentity, RestartApp, SaveWindowState } from '../wailsjs/go/main/App';
+import { SelectDirectory, SaveConfig, StartWatchdog, TriggerMint, GetDID, LoadConfig, GetWorkspaceFiles, GetLedger, ExportCredentialJSON, RestoreDataFromSync, GenerateHTMLReport, RevokeCredential, VerifyChain, VerifyCredential, SaveToFile, GetWalletStatus, UnlockWallet, InitWallet, MigrateWallet, GetMnemonic, LockVault, ToggleAutoStart, IsAutoStartEnabled, ImportMnemonic, UpdateIgnoredPatterns, SaveSessionIgnores, ResolveDroppedPath, BroadcastVC, GetBroadcastStatus, ResetBroadcastVC, DeleteBroadcastVC, GetProfileIndex, GetProfileInfo, SaveProfileInfo, GetAppVersion, CheckForUpdate, ApplyUpdate, WipeIdentity, RestartApp, SaveWindowState, NukeRemoteCredentials } from '../wailsjs/go/main/App';
 import { EventsOn, WindowGetSize, WindowSetSize, OnFileDrop } from '../wailsjs/runtime/runtime';
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -200,7 +200,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const btnCloseDrawer = document.getElementById('btn-close-drawer');
     const btnRevokeCredential = document.getElementById('btn-revoke-credential');
     const revokeStatus = document.getElementById('revoke-status');
-    const btnBroadcastGist = document.getElementById('btn-broadcast-gist');
+    const btnBroadcast = document.getElementById('btn-broadcast');
     const broadcastStatus = document.getElementById('broadcast-status');
     // Chain status bar elements
     const chainStatusBar = document.getElementById('chain-status-bar');
@@ -209,6 +209,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const chainStats = document.getElementById('chain-stats');
     let activeVcId = null;
     let activeProjectContext = ''; // Track current workspace name
+    let currentViewportMode = 'all'; // Track current layout mode
+    let preferredAllWidth = 1120; // Remember user's custom width in A mode
 
     // Cloud sync DOM refs (must be declared before boot sequence so renderSyncDirs works)
     const syncDirsContainer = document.getElementById('sync-dirs-container');
@@ -234,6 +236,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         nodeDid.innerText = did;
 
         const cfg = await LoadConfig();
+        if (cfg && cfg.window_width > 0) preferredAllWidth = cfg.window_width;
         if (cfg.workspaces) workspaces = cfg.workspaces;
         if (cfg.cloud_sync_dirs) cloudSyncDirs = cfg.cloud_sync_dirs;
         if (cfg.ignored_patterns) ignoredPatterns = cfg.ignored_patterns;
@@ -262,6 +265,108 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (patStatus) { patStatus.innerText = '✓ CONFIGURED'; patStatus.style.color = '#00ffcc'; }
         }
 
+        // ======== P4: BROADCAST CHANNELS ========
+        const chkChannelVerihash = document.getElementById('chk-channel-verihash');
+        const chkChannelGist = document.getElementById('chk-channel-gist');
+        const gistPatContainer = document.getElementById('github-pat-container');
+        const inputGithubPat = document.getElementById('input-github-pat');
+        const btnSaveGithubPat = document.getElementById('btn-save-github-pat');
+        const githubPatFeedback = document.getElementById('github-pat-feedback');
+        const broadcastGistStatus = document.getElementById('broadcast-gist-status');
+
+        // Nuke Remote Logic
+        const btnOpenNuke = document.getElementById('btn-open-nuke');
+        const nukeModal = document.getElementById('nuke-modal');
+        const btnNukeClose = document.getElementById('btn-nuke-close');
+        const btnNukeCancel = document.getElementById('btn-nuke-cancel');
+        const btnNukeExecute = document.getElementById('btn-nuke-execute');
+        const chkNukeVerihash = document.getElementById('chk-nuke-verihash');
+        const chkNukeGist = document.getElementById('chk-nuke-gist');
+        const inputNukePassword = document.getElementById('input-nuke-password');
+        const nukeFeedback = document.getElementById('nuke-feedback');
+
+        if (btnOpenNuke) {
+            btnOpenNuke.addEventListener('click', () => {
+                nukeModal.style.display = 'flex';
+                inputNukePassword.value = '';
+                nukeFeedback.style.display = 'none';
+            });
+        }
+
+        function closeNukeModal() {
+            nukeModal.style.display = 'none';
+            inputNukePassword.value = '';
+            nukeFeedback.style.display = 'none';
+        }
+
+        if (btnNukeClose) btnNukeClose.addEventListener('click', closeNukeModal);
+        if (btnNukeCancel) btnNukeCancel.addEventListener('click', closeNukeModal);
+
+        if (btnNukeExecute) {
+            btnNukeExecute.addEventListener('click', async () => {
+                const channels = [];
+                if (chkNukeVerihash.checked) channels.push(chkNukeVerihash.value);
+                if (chkNukeGist.checked) channels.push(chkNukeGist.value);
+
+                if (channels.length === 0) {
+                    nukeFeedback.innerText = "Please select at least one platform.";
+                    nukeFeedback.style.display = 'block';
+                    return;
+                }
+
+                const pwd = inputNukePassword.value.trim();
+                if (!pwd) {
+                    nukeFeedback.innerText = "Vault password is required.";
+                    nukeFeedback.style.display = 'block';
+                    return;
+                }
+
+                btnNukeExecute.innerText = "[ NUKING... ]";
+                btnNukeExecute.disabled = true;
+                nukeFeedback.style.display = 'none';
+
+                try {
+                    const resRaw = await window.go.main.App.NukeRemoteCredentials(channels, pwd);
+                    const res = JSON.parse(resRaw);
+                    
+                    if (res.error) {
+                        nukeFeedback.innerText = "Error: " + res.error;
+                        nukeFeedback.style.display = 'block';
+                    } else if (res.status === 'success') {
+                        nukeFeedback.style.color = '#00ffcc';
+                        nukeFeedback.innerText = `Success! Purged ${res.count} remote credentials.`;
+                        nukeFeedback.style.display = 'block';
+                        setTimeout(() => {
+                            nukeFeedback.style.color = '#ff3366'; // Reset color
+                            closeNukeModal();
+                        }, 2000);
+                    }
+                } catch (err) {
+                    nukeFeedback.innerText = "Internal error: " + err;
+                    nukeFeedback.style.display = 'block';
+                } finally {
+                    btnNukeExecute.innerText = "[ EXECUTE NUKE ]";
+                    btnNukeExecute.disabled = false;
+                }
+            });
+        }
+        
+        if (chkChannelVerihash && chkChannelGist) {
+            const channels = cfg.active_channels || ['verihash_org'];
+            chkChannelVerihash.checked = channels.includes('verihash_org');
+            chkChannelGist.checked = channels.includes('gist');
+            
+            if (gistPatContainer) gistPatContainer.style.display = chkChannelGist.checked ? 'block' : 'none';
+
+            const updateChannels = () => {
+                if (gistPatContainer) gistPatContainer.style.display = chkChannelGist.checked ? 'block' : 'none';
+                syncConfig();
+            };
+
+            chkChannelVerihash.addEventListener('change', updateChannels);
+            chkChannelGist.addEventListener('change', updateChannels);
+        }
+
         renderWorkspaces();
         renderSyncDirs();
         renderIgnorePatterns();
@@ -279,47 +384,117 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const btnWorkspaceToggle = document.getElementById('btn-workspace-toggle');
     const mainWorkspace = document.getElementById('main-workspace');
+
+    // Viewport mode manager
+    async function setViewportMode(mode) {
+        currentViewportMode = mode;
+        const sResizer = document.getElementById('sidebar-resizer');
+        try {
+            const size = await WindowGetSize();
+            
+            let newWidth = preferredAllWidth;
+            if (mode === 'all') {
+                mainWorkspace.style.display = '';
+                sidebar.classList.remove('collapsed');
+                document.body.classList.remove('mini-mode');
+                if (sResizer) sResizer.style.display = '';
+                if (btnSidebarToggle) {
+                    btnSidebarToggle.style.display = '';
+                    btnSidebarToggle.innerText = '[ > ]';
+                }
+                if (btnWorkspaceToggle) {
+                    btnWorkspaceToggle.style.display = '';
+                    btnWorkspaceToggle.innerText = '[ < ]';
+                }
+                newWidth = preferredAllWidth;
+                appendLog('// SYS_INFO > VIEWPORT SET: SHOW_ALL_PANELS', 'sys');
+            } else if (mode === 'left') {
+                mainWorkspace.style.display = '';
+                sidebar.classList.add('collapsed');
+                document.body.classList.remove('mini-mode');
+                if (sResizer) sResizer.style.display = 'none';
+                if (btnSidebarToggle) {
+                    btnSidebarToggle.style.display = '';
+                    btnSidebarToggle.innerText = '[ < ]';
+                }
+                if (btnWorkspaceToggle) {
+                    btnWorkspaceToggle.style.display = 'none';
+                }
+                newWidth = 800;
+                appendLog('// SYS_INFO > VIEWPORT SET: PRIMARY_WORKSPACE_ONLY', 'sys');
+            } else if (mode === 'right') {
+                mainWorkspace.style.display = 'none';
+                sidebar.classList.remove('collapsed');
+                document.body.classList.add('mini-mode');
+                if (sResizer) sResizer.style.display = 'none';
+                if (btnSidebarToggle) {
+                    btnSidebarToggle.style.display = 'none';
+                }
+                if (btnWorkspaceToggle) {
+                    btnWorkspaceToggle.style.display = '';
+                    btnWorkspaceToggle.innerText = '[ > ]';
+                }
+                newWidth = 340;
+                appendLog('// SYS_INFO > VIEWPORT SET: SIDEBAR_ONLY', 'sys');
+            }
+
+            // Using simple top-left anchor (default OS behavior via WindowSetSize only)
+            // to ensure maximum cross-platform stability and zero window-positioning race conditions.
+            WindowSetSize(newWidth, size.h);
+        } catch (e) {
+            console.error(e);
+        }
+    }
+
     if (btnWorkspaceToggle) {
         btnWorkspaceToggle.addEventListener('click', async () => {
             const isHidden = mainWorkspace.style.display === 'none';
-            const sResizer = document.getElementById('sidebar-resizer');
-            try {
-                const size = await WindowGetSize();
-                if (isHidden) {
-                    mainWorkspace.style.display = '';
-                    if (sResizer) sResizer.style.display = '';
-                    document.body.classList.remove('mini-mode');
-                    btnWorkspaceToggle.innerText = '[ < ]';
-                    btnSidebarToggle.style.display = ''; // Show sidebar toggle
-                    WindowSetSize(1120, size.h);
-                } else {
-                    mainWorkspace.style.display = 'none';
-                    if (sResizer) sResizer.style.display = 'none';
-                    document.body.classList.add('mini-mode');
-                    btnWorkspaceToggle.innerText = '[ > ]';
-                    btnSidebarToggle.style.display = 'none'; // Hide sidebar toggle
-                    WindowSetSize(340, size.h);
-                }
-            } catch(e) { console.error(e); }
+            if (isHidden) {
+                await setViewportMode('all');
+            } else {
+                await setViewportMode('right');
+            }
         });
     }
 
     // Visual Mechanics
     btnSidebarToggle.addEventListener('click', async () => {
-        sidebar.classList.toggle('collapsed');
         const isCollapsed = sidebar.classList.contains('collapsed');
-        try {
-            const size = await WindowGetSize();
-            if (isCollapsed) {
-                btnSidebarToggle.innerText = '[ < ]';
-                if (btnWorkspaceToggle) btnWorkspaceToggle.style.display = 'none'; // Hide workspace toggle
-                WindowSetSize(800, size.h);
-            } else {
-                btnSidebarToggle.innerText = '[ > ]';
-                if (btnWorkspaceToggle) btnWorkspaceToggle.style.display = ''; // Show workspace toggle
-                WindowSetSize(1120, size.h);
-            }
-        } catch (err) { }
+        if (isCollapsed) {
+            await setViewportMode('all');
+        } else {
+            await setViewportMode('left');
+        }
+    });
+
+    // Global keyboard shortcuts for layout switching
+    document.addEventListener('keydown', (e) => {
+        // Prevent shortcuts if typing in input fields or textareas
+        if (
+            document.activeElement &&
+            (document.activeElement.tagName === 'INPUT' ||
+             document.activeElement.tagName === 'TEXTAREA' ||
+             document.activeElement.isContentEditable)
+        ) {
+            return;
+        }
+
+        // Prevent shortcuts if a modal dialog is currently active
+        const activeModal = document.querySelector('.modal-overlay[style*="display: flex"]') || 
+                            document.querySelector('.modal-overlay[style*="display: block"]');
+        if (activeModal) return;
+
+        const key = e.key.toLowerCase();
+        if (key === 'l') {
+            e.preventDefault();
+            setViewportMode('left');
+        } else if (key === 'r') {
+            e.preventDefault();
+            setViewportMode('right');
+        } else if (key === 'a') {
+            e.preventDefault();
+            setViewportMode('all');
+        }
     });
 
     if (btnSelectAll && btnDeselectAll) {
@@ -367,8 +542,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         const model = modelNameInput ? modelNameInput.value : '';
         const baseUrlInput = document.getElementById('base-url');
         const baseUrl = baseUrlInput ? baseUrlInput.value : '';
+        let activeChannels = [];
+        if (document.getElementById('chk-channel-verihash') && document.getElementById('chk-channel-verihash').checked) activeChannels.push('verihash_org');
+        if (document.getElementById('chk-channel-gist') && document.getElementById('chk-channel-gist').checked) activeChannels.push('gist');
+        if (activeChannels.length === 0) activeChannels = ['verihash_org']; // Fallback
+        
         // Pass empty string for PAT — SaveConfig preserves the existing value when empty
-        await SaveConfig(workspaces, engine, model, key, baseUrl, cloudSyncDirs, '');
+        await SaveConfig(workspaces, engine, model, key, baseUrl, cloudSyncDirs, '', activeChannels);
     }
 
     // AI Engine change handler --  supports all 5 providers
@@ -502,7 +682,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 ignoredPatterns.splice(i, 1);
                 await UpdateIgnoredPatterns(ignoredPatterns);
                 renderIgnorePatterns();
-                if (activeWorkspaces.size > 0) await renderFileTree([...activeWorkspaces][0]);
+                if (activeWorkspaces.size > 0) await updateView();
             });
             ignorePatternsContainer.appendChild(tag);
         });
@@ -516,7 +696,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 inputIgnorePattern.value = '';
                 await UpdateIgnoredPatterns(ignoredPatterns);
                 renderIgnorePatterns();
-                if (activeWorkspaces.size > 0) await renderFileTree([...activeWorkspaces][0]);
+                if (activeWorkspaces.size > 0) await updateView();
             }
         };
         btnAddIgnore.addEventListener('click', addPattern);
@@ -545,7 +725,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const model = modelNameInput ? modelNameInput.value : '';
                 const baseUrlInput = document.getElementById('base-url');
                 const baseUrl = baseUrlInput ? baseUrlInput.value : '';
-                await SaveConfig(workspaces, engine, model, key, baseUrl, cloudSyncDirs, pat);
+                let activeChannels = [];
+                if (document.getElementById('chk-channel-verihash') && document.getElementById('chk-channel-verihash').checked) activeChannels.push('verihash_org');
+                if (document.getElementById('chk-channel-gist') && document.getElementById('chk-channel-gist').checked) activeChannels.push('gist');
+                if (activeChannels.length === 0) activeChannels = ['verihash_org']; // Fallback
+                
+                await SaveConfig(workspaces, engine, model, key, baseUrl, cloudSyncDirs, pat, activeChannels);
                 if (feedback) { feedback.innerText = '✓ PAT saved. GitHub Gist channel is now active.'; feedback.style.color = '#00ffcc'; }
                 if (patStatus) { patStatus.innerText = '✓ CONFIGURED'; patStatus.style.color = '#00ffcc'; }
                 patInput.value = '';
@@ -727,6 +912,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 renderWorkspaces();
                 updateView();
+
+                // Auto-switch to Workbench view if currently in Ledger view
+                if (viewLedger && viewLedger.style.display === 'flex') {
+                    switchView('workbench');
+                }
             });
             workspaceStack.appendChild(card);
         });
@@ -801,7 +991,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Always populate the filter tree using the primary (first) workspace
             // The filter/session-ignore system is per-workspace and uses the first selected ws
             if (wsArray.length > 0) {
-                await renderFileTree(wsArray[0]);
+                await renderFileTree(wsArray[0], true);
             }
         } catch (e) {
             fileTreeContainer.innerHTML = `<div class="err">Error loading tree: ${e}</div>`;
@@ -844,14 +1034,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    async function renderFileTree(ws) {
-        fileTreeContainer.innerHTML = '<div style="color:#888;">Fetching modifications...</div>';
+    async function renderFileTree(ws, onlyDropdown = false) {
+        if (!onlyDropdown) {
+            fileTreeContainer.innerHTML = '<div style="color:#888;">Fetching modifications...</div>';
+        }
         try {
             const files = await GetWorkspaceFiles(ws);
-            fileTreeContainer.innerHTML = '';
-            if (!files || files.length === 0) {
-                fileTreeContainer.innerHTML = '<div style="color:#888; font-size:0.8rem;">No recent modifications detected.</div>';
-                return;
+            if (!onlyDropdown) {
+                fileTreeContainer.innerHTML = '';
+                if (!files || files.length === 0) {
+                    fileTreeContainer.innerHTML = '<div style="color:#888; font-size:0.8rem;">No recent modifications detected.</div>';
+                    return;
+                }
             }
             const normalizedWs = ws.replace(/\\/g, '/');
             const localIgnores = sessionIgnores[ws] || [];
@@ -1051,7 +1245,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                             
                             // Keep menu open while checking/unchecking
                             e.stopPropagation();
-                            await renderFileTree(ws);
+                            await updateView();
                         });
                         
                         // Tree Collapser event
@@ -1066,7 +1260,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                                     } else {
                                         collapsedDirs[ws].push(nodePath);
                                     }
-                                    await renderFileTree(ws);
+                                    await renderFileTree(ws, true);
                                 });
                             }
                         }
@@ -1077,48 +1271,50 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             // 3. Render visible files
-            files.forEach(file => {
-                // Determine clean relative path trimming the workspace root
-                let relPath = file;
-                if (file.toLowerCase().startsWith(normalizedWs.toLowerCase())) {
-                    relPath = file.substring(normalizedWs.length);
-                }
-                relPath = relPath.replace(/^[\/\\]/, '');
-                // Single-file workspace: ws === file, so relPath is empty → use basename
-                if (!relPath) relPath = file.replace(/\\/g, '/').split('/').pop();
+            if (!onlyDropdown) {
+                files.forEach(file => {
+                    // Determine clean relative path trimming the workspace root
+                    let relPath = file;
+                    if (file.toLowerCase().startsWith(normalizedWs.toLowerCase())) {
+                        relPath = file.substring(normalizedWs.length);
+                    }
+                    relPath = relPath.replace(/^[\/\\]/, '');
+                    // Single-file workspace: ws === file, so relPath is empty → use basename
+                    if (!relPath) relPath = file.replace(/\\/g, '/').split('/').pop();
 
-                // Skip files if ANY of their parent directories are currently ignored (evaluating deepest rule)
-                const parts = relPath.split('/');
-                let currentDir = "";
-                let shouldIgnore = false;
-                for (let i = 0; i < parts.length - 1; i++) {
-                    currentDir = currentDir ? (currentDir + '/' + parts[i]) : parts[i];
-                    if (localIgnores.includes('DIR:' + currentDir)) {
+                    // Skip files if ANY of their parent directories are currently ignored (evaluating deepest rule)
+                    const parts = relPath.split('/');
+                    let currentDir = "";
+                    let shouldIgnore = false;
+                    for (let i = 0; i < parts.length - 1; i++) {
+                        currentDir = currentDir ? (currentDir + '/' + parts[i]) : parts[i];
+                        if (localIgnores.includes('DIR:' + currentDir)) {
+                            shouldIgnore = true;
+                        } else if (localIgnores.includes('EXCEPT:' + currentDir)) {
+                            shouldIgnore = false;
+                        }
+                    }
+                    
+                    // Explicit file ignore overrides directory rules
+                    if (localIgnores.includes(file)) {
                         shouldIgnore = true;
-                    } else if (localIgnores.includes('EXCEPT:' + currentDir)) {
+                    } else if (localIgnores.includes('EXCEPT:' + relPath)) {
                         shouldIgnore = false;
                     }
-                }
-                
-                // Explicit file ignore overrides directory rules
-                if (localIgnores.includes(file)) {
-                    shouldIgnore = true;
-                } else if (localIgnores.includes('EXCEPT:' + relPath)) {
-                    shouldIgnore = false;
-                }
 
-                if (shouldIgnore) return;
+                    if (shouldIgnore) return;
 
-                const item = document.createElement('label');
-                item.className = 'file-tree-item';
+                    const item = document.createElement('label');
+                    item.className = 'file-tree-item';
 
-                // Default is unchecked for targeted selection UX
-                item.innerHTML = `
-                    <input type="checkbox" class="file-checkbox" value="${file}">
-                    <span class="file-path">${relPath}</span>
-                `;
-                fileTreeContainer.appendChild(item);
-            });
+                    // Default is unchecked for targeted selection UX
+                    item.innerHTML = `
+                        <input type="checkbox" class="file-checkbox" value="${file}">
+                        <span class="file-path">${relPath}</span>
+                    `;
+                    fileTreeContainer.appendChild(item);
+                });
+            }
         } catch (e) {
             fileTreeContainer.innerHTML = `<div class="err">Error loading tree: ${e}</div>`;
         }
@@ -1253,8 +1449,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         matrixCanvas.width = window.innerWidth;
         matrixCanvas.height = window.innerHeight;
         clearTimeout(_resizeTimer);
-        _resizeTimer = setTimeout(() => {
-            SaveWindowState(false).catch(() => {});
+        _resizeTimer = setTimeout(async () => {
+            if (currentViewportMode === 'all') {
+                try {
+                    const size = await WindowGetSize();
+                    preferredAllWidth = size.w;
+                    SaveWindowState(false).catch(() => {});
+                } catch (e) {}
+            }
         }, 800);
     });
 
@@ -1263,7 +1465,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const copyToast = document.getElementById('copy-toast');
     if (btnCopyDid) {
         btnCopyDid.addEventListener('click', async () => {
-            const did = nodeDid.innerText;
+            const did = nodeDid.textContent;
             try {
                 await navigator.clipboard.writeText(did);
             } catch {
@@ -1292,6 +1494,34 @@ document.addEventListener('DOMContentLoaded', async () => {
             renderWorkspaces();
             updateView();
         });
+    }
+
+    // ======== P1: AI PANEL UPWARD COLLAPSE ========
+    const btnToggleAiPanel = document.getElementById('btn-toggle-ai-panel');
+    const aiConfigPanel = document.getElementById('ai-config-panel');
+    if (btnToggleAiPanel && aiConfigPanel) {
+        btnToggleAiPanel.addEventListener('click', () => {
+            const isCollapsed = aiConfigPanel.style.display === 'none';
+            if (isCollapsed) {
+                aiConfigPanel.style.display = 'block';
+                btnToggleAiPanel.innerText = '▲';
+                btnToggleAiPanel.title = 'Collapse AI Panel';
+                localStorage.setItem('aiPanelCollapsed', 'false');
+            } else {
+                aiConfigPanel.style.display = 'none';
+                btnToggleAiPanel.innerText = '▼';
+                btnToggleAiPanel.title = 'Expand AI Panel';
+                localStorage.setItem('aiPanelCollapsed', 'true');
+            }
+        });
+
+        // Load saved collapse state on startup
+        const isSavedCollapsed = localStorage.getItem('aiPanelCollapsed') === 'true';
+        if (isSavedCollapsed) {
+            aiConfigPanel.style.display = 'none';
+            btnToggleAiPanel.innerText = '▼';
+            btnToggleAiPanel.title = 'Expand AI Panel';
+        }
     }
 
     // ======== P2: CUSTOM CYBER SELECT ========
@@ -1574,6 +1804,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const container = document.getElementById(badgeContainerId);
                     if (!container || !pubs || pubs.length === 0) return;
                     pubs.forEach(pub => {
+                        if (pub.status === 'deleted') return; // Skip rendering deleted channels to keep ledger clean
+                        
                         const badge = document.createElement('span');
                         const icons = { pending: '⏳', publishing: '📡', success: '✅', failed: '❌', revoked: '🚫' };
                         const icon = icons[pub.status] || '?';
@@ -1663,10 +1895,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         drawerFilePaths.innerHTML = manifestHTML;
 
         // Reset broadcast button & status to loading state
-        if (btnBroadcastGist) {
-            btnBroadcastGist.disabled = true;
-            btnBroadcastGist.innerText = '[ ⏳ CHECKING... ]';
-            btnBroadcastGist.style.opacity = '0.5';
+        if (btnBroadcast) {
+            btnBroadcast.disabled = true;
+            btnBroadcast.innerText = '[ ⏳ CHECKING... ]';
+            btnBroadcast.style.opacity = '0.5';
         }
         if (broadcastStatus) { broadcastStatus.style.display = 'none'; }
         // Clear verify-sig result when switching credentials
@@ -1681,117 +1913,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         credentialDrawer.style.minHeight = '0';
         credentialDrawer.style.display = 'flex';
 
-        // Async check: has this VC already been successfully broadcast to gist?
-        GetBroadcastStatus(entry.vc_id).then(pubs => {
-            if (!btnBroadcastGist) return;
-            const gistPub = (pubs || []).find(p => p.channel === 'gist');
-            if (gistPub && gistPub.status === 'success') {
-                // Already published — lock the button
-                btnBroadcastGist.disabled = true;
-                btnBroadcastGist.innerText = '[ ✅ GIST PUBLISHED ]';
-                btnBroadcastGist.style.opacity = '0.55';
-                btnBroadcastGist.style.cursor = 'not-allowed';
-                if (broadcastStatus) {
-                    broadcastStatus.style.display = 'block';
-                    broadcastStatus.style.background = 'rgba(0,255,204,0.06)';
-                    broadcastStatus.style.color = 'rgba(0,255,204,0.8)';
-                    broadcastStatus.style.border = '1px solid rgba(0,255,204,0.2)';
-                    broadcastStatus.innerHTML = `✅ Published · <a href="${gistPub.remote_url}" style="color:#00ffcc;" target="_blank">${gistPub.remote_url}</a>
-                        &nbsp;<span id="btn-rebroadcast-link" style="cursor:pointer; color:rgba(0,200,255,0.7); font-size:0.62rem; border-bottom:1px dotted rgba(0,200,255,0.4);" title="Update Gist content in-place (or create new if deleted)">🔄 Re-broadcast</span>
-                        &nbsp;<span id="btn-delgist-link" style="cursor:pointer; color:rgba(255,80,80,0.75); font-size:0.62rem; border-bottom:1px dotted rgba(255,80,80,0.35);" title="Delete this Gist from GitHub. The local credential stays valid.">✕ Del-Gist</span>`;
-                    document.getElementById('btn-rebroadcast-link')?.addEventListener('click', async () => {
-                        if (!confirm('Re-broadcast this credential to GitHub Gist?\n\n• If the Gist still exists → content will be updated in-place (same URL)\n• If the Gist was deleted → a new Gist will be created')) return;
-                        await ResetBroadcastVC(entry.vc_id, 'gist');
-                        btnBroadcastGist.disabled = false;
-                        btnBroadcastGist.innerText = '[ 📡 BROADCAST GIST ]';
-                        btnBroadcastGist.style.opacity = '1';
-                        btnBroadcastGist.style.cursor = 'pointer';
-                        broadcastStatus.style.display = 'none';
-                    });
-                    document.getElementById('btn-delgist-link')?.addEventListener('click', async () => {
-                        if (!confirm('Delete this Gist from GitHub?\n\nThe local credential will remain valid. You can re-broadcast a fresh Gist afterwards.')) return;
-                        const delResult = JSON.parse(await DeleteBroadcastVC(entry.vc_id, 'gist'));
-                        if (delResult.error) {
-                            broadcastStatus.innerHTML = `✕ Delete failed: ${delResult.error}`;
-                            broadcastStatus.style.color = 'var(--warning)';
-                        } else {
-                            btnBroadcastGist.disabled = false;
-                            btnBroadcastGist.innerText = '[ 📡 BROADCAST GIST ]';
-                            btnBroadcastGist.style.opacity = '1';
-                            btnBroadcastGist.style.cursor = 'pointer';
-                            broadcastStatus.style.display = 'none';
-                        }
-                    });
-                }
-            } else if (gistPub && (gistPub.status === 'pending' || gistPub.status === 'publishing')) {
-                // In-flight — start polling so the button updates when backend finishes
-                // (handles the case where the drawer is opened while a broadcast is running)
-                btnBroadcastGist.disabled = true;
-                btnBroadcastGist.innerText = '[ 📡 BROADCASTING... ]';
-                btnBroadcastGist.style.opacity = '0.6';
-                if (broadcastStatus) {
-                    broadcastStatus.style.display = 'block';
-                    broadcastStatus.style.background = 'rgba(0,180,255,0.06)';
-                    broadcastStatus.style.color = 'rgba(0,200,255,0.85)';
-                    broadcastStatus.style.border = '1px solid rgba(0,180,255,0.25)';
-                    broadcastStatus.innerText = '📡 Broadcast in progress — waiting for GitHub response...';
-                }
-                // Poll for completion (same logic as the click handler)
-                const polledVcId = entry.vc_id;
-                let pollCount = 0;
-                const pollInterval = setInterval(async () => {
-                    pollCount++;
-                    try {
-                        const freshPubs = await GetBroadcastStatus(polledVcId);
-                        const freshGistPub = (freshPubs || []).find(p => p.channel === 'gist');
-                        if (!freshGistPub) return;
-                        if (freshGistPub.status === 'success') {
-                            clearInterval(pollInterval);
-                            if (activeVcId === polledVcId && btnBroadcastGist) {
-                                btnBroadcastGist.disabled = true;
-                                btnBroadcastGist.innerText = '[ ✅ GIST PUBLISHED ]';
-                                btnBroadcastGist.style.opacity = '0.55';
-                                btnBroadcastGist.style.cursor = 'not-allowed';
-                            }
-                            if (broadcastStatus && activeVcId === polledVcId) {
-                                broadcastStatus.style.background = 'rgba(0,255,204,0.06)';
-                                broadcastStatus.style.color = 'rgba(0,255,204,0.8)';
-                                broadcastStatus.style.border = '1px solid rgba(0,255,204,0.2)';
-                                broadcastStatus.innerHTML = `✅ Published to GitHub Gist · <a href="${freshGistPub.remote_url}" style="color:#00ffcc;" target="_blank">${freshGistPub.remote_url}</a>`;
-                            }
-                        } else if (freshGistPub.status === 'failed' || pollCount >= 40) {
-                            clearInterval(pollInterval);
-                            if (activeVcId === polledVcId && btnBroadcastGist) {
-                                btnBroadcastGist.disabled = false;
-                                btnBroadcastGist.innerText = '[ 📡 BROADCAST GIST ]';
-                                btnBroadcastGist.style.opacity = '1';
-                                btnBroadcastGist.style.cursor = 'pointer';
-                            }
-                            if (broadcastStatus && activeVcId === polledVcId) {
-                                const errMsg = freshGistPub.last_error || (pollCount >= 40 ? 'Timed out — check logs' : 'Unknown error');
-                                broadcastStatus.style.background = 'rgba(255,85,0,0.08)';
-                                broadcastStatus.style.color = 'var(--warning)';
-                                broadcastStatus.style.border = '1px solid rgba(255,85,0,0.4)';
-                                broadcastStatus.innerText = '✕ Broadcast failed: ' + errMsg;
-                            }
-                        }
-                    } catch (_) { /* keep polling on network hiccup */ }
-                }, 3000);
-            } else {
-                // Not yet broadcast (or previously failed) — enable
-                btnBroadcastGist.disabled = false;
-                btnBroadcastGist.innerText = '[ 📡 BROADCAST GIST ]';
-                btnBroadcastGist.style.opacity = '1';
-                btnBroadcastGist.style.cursor = 'pointer';
-            }
-        }).catch(() => {
-            // On error, allow the user to try
-            if (btnBroadcastGist) {
-                btnBroadcastGist.disabled = false;
-                btnBroadcastGist.innerText = '[ 📡 BROADCAST GIST ]';
-                btnBroadcastGist.style.opacity = '1';
-            }
-        });
+        // Async check: dynamic multi-channel broadcast status update
+        updateBroadcastUI(entry.vc_id);
     }
 
     btnCloseDrawer.addEventListener('click', () => {
@@ -1804,66 +1927,212 @@ document.addEventListener('DOMContentLoaded', async () => {
         activeVcId = null;
     });
 
-    // ======== BROADCAST GIST ========
-    if (btnBroadcastGist) {
-        btnBroadcastGist.addEventListener('click', async () => {
+    // ======== BROADCAST / PUBLISH ========
+    let broadcastPollInterval = null;
+
+    async function updateBroadcastUI(vcID) {
+        if (!btnBroadcast) return;
+        if (activeVcId !== vcID) return;
+
+        try {
+            const cfg = await LoadConfig();
+            const activeChannels = cfg.active_channels || ['verihash_org'];
+            const pubs = await GetBroadcastStatus(vcID) || [];
+
+            // Compute status for active channels
+            const channelStates = activeChannels.map(ch => {
+                const pub = pubs.find(p => p.channel === ch);
+                return {
+                    channel: ch,
+                    status: pub ? pub.status : 'idle',
+                    remote_url: pub ? pub.remote_url : '',
+                    last_error: pub ? pub.last_error : ''
+                };
+            });
+
+            // 1. Determine overall button state
+            const isAnyPending = channelStates.some(cs => cs.status === 'pending' || cs.status === 'publishing');
+            const isAnyFailed = channelStates.some(cs => cs.status === 'failed');
+            const isAllSuccess = channelStates.length > 0 && channelStates.every(cs => cs.status === 'success');
+
+            if (isAnyPending) {
+                btnBroadcast.disabled = true;
+                btnBroadcast.innerText = '[ ⏳ BROADCASTING... ]';
+                btnBroadcast.style.opacity = '0.6';
+                btnBroadcast.style.cursor = 'not-allowed';
+                
+                // Trigger/continue polling if not already doing so
+                if (!broadcastPollInterval) {
+                    let pollCount = 0;
+                    broadcastPollInterval = setInterval(async () => {
+                        pollCount++;
+                        if (pollCount >= 40 || activeVcId !== vcID) {
+                            clearInterval(broadcastPollInterval);
+                            broadcastPollInterval = null;
+                        }
+                        await updateBroadcastUI(vcID);
+                    }, 3000);
+                }
+            } else {
+                if (broadcastPollInterval) {
+                    clearInterval(broadcastPollInterval);
+                    broadcastPollInterval = null;
+                }
+
+                if (isAllSuccess) {
+                    btnBroadcast.disabled = true;
+                    btnBroadcast.innerText = '[ ✅ BROADCASTED ]';
+                    btnBroadcast.style.opacity = '0.55';
+                    btnBroadcast.style.cursor = 'not-allowed';
+                } else if (isAnyFailed) {
+                    btnBroadcast.disabled = false;
+                    btnBroadcast.innerText = '[ ⚠️ RETRY BROADCAST ]';
+                    btnBroadcast.style.opacity = '1';
+                    btnBroadcast.style.cursor = 'pointer';
+                } else {
+                    btnBroadcast.disabled = false;
+                    btnBroadcast.innerText = '[ 📡 BROADCAST ]';
+                    btnBroadcast.style.opacity = '1';
+                    btnBroadcast.style.cursor = 'pointer';
+                }
+            }
+
+            // 2. Render dynamic status panel
+            if (broadcastStatus) {
+                if (channelStates.length === 0) {
+                    broadcastStatus.style.display = 'none';
+                } else {
+                    broadcastStatus.style.display = 'block';
+                    broadcastStatus.style.background = 'rgba(0,0,0,0.25)';
+                    broadcastStatus.style.border = '1px solid rgba(0,255,204,0.15)';
+                    broadcastStatus.style.padding = '8px 12px';
+                    broadcastStatus.style.borderRadius = '4px';
+                    broadcastStatus.style.marginTop = '8px';
+                    
+                    let html = `<div style="font-size: 0.7rem; color: #888; margin-bottom: 6px; font-weight: bold; border-bottom: 1px solid rgba(0,255,204,0.1); padding-bottom: 4px;">📡 BROADCAST CHANNELS</div>`;
+                    
+                    channelStates.forEach(cs => {
+                        const channelLabel = cs.channel === 'verihash_org' ? '🌐 verihash.org' : '🐙 GitHub Gist';
+                        let statusText = '';
+                        let statusColor = '#aaa';
+                        let actionHtml = '';
+
+                        if (cs.status === 'success') {
+                            statusText = '✓ success';
+                            statusColor = '#00ffcc';
+                            if (cs.channel === 'verihash_org') {
+                                actionHtml = `
+                                    <a href="${cs.remote_url}" style="color:#00ffcc; text-decoration:none; border-bottom:1px dotted #00ffcc; margin-left:8px;" target="_blank">View ↗</a>
+                                    <span class="btn-channel-withdraw" data-channel="verihash_org" style="cursor:pointer; color:rgba(255,80,80,0.75); font-size:0.62rem; border-bottom:1px dotted rgba(255,80,80,0.35); margin-left:12px;" title="Withdraw publication from verihash.org node. The local credential remains valid.">✕ Withdraw</span>
+                                `;
+                            } else {
+                                actionHtml = `
+                                    <a href="${cs.remote_url}" style="color:#00ffcc; text-decoration:none; border-bottom:1px dotted #00ffcc; margin-left:8px;" target="_blank">View Gist ↗</a>
+                                    <span class="btn-channel-rebroadcast" data-channel="gist" style="cursor:pointer; color:rgba(0,200,255,0.7); font-size:0.62rem; border-bottom:1px dotted rgba(0,200,255,0.4); margin-left:12px;" title="Update Gist content in-place (or create new if deleted)">🔄 Re-broadcast</span>
+                                    <span class="btn-channel-delete" data-channel="gist" style="cursor:pointer; color:rgba(255,80,80,0.75); font-size:0.62rem; border-bottom:1px dotted rgba(255,80,80,0.35); margin-left:12px;" title="Delete Gist from GitHub. The local credential remains valid.">✕ Delete</span>
+                                `;
+                            }
+                        } else if (cs.status === 'pending' || cs.status === 'publishing') {
+                            statusText = '⏳ broadcasting...';
+                            statusColor = 'rgba(0,200,255,0.85)';
+                        } else if (cs.status === 'failed') {
+                            statusText = `✕ failed: ${cs.last_error || 'Unknown error'}`;
+                            statusColor = 'var(--warning)';
+                            if (cs.channel === 'gist') {
+                                actionHtml = `
+                                    <span class="btn-channel-reset" data-channel="gist" style="cursor:pointer; color:rgba(0,200,255,0.7); font-size:0.62rem; border-bottom:1px dotted rgba(0,200,255,0.4); margin-left:12px;" title="Reset Gist publication state">🔄 Reset</span>
+                                `;
+                            } else if (cs.channel === 'verihash_org') {
+                                actionHtml = `
+                                    <span class="btn-channel-reset" data-channel="verihash_org" style="cursor:pointer; color:rgba(0,200,255,0.7); font-size:0.62rem; border-bottom:1px dotted rgba(0,200,255,0.4); margin-left:12px;" title="Reset verihash.org publication state">🔄 Reset</span>
+                                `;
+                            }
+                        } else {
+                            statusText = '💤 inactive';
+                            statusColor = '#666';
+                        }
+
+                        html += `
+                            <div style="font-size: 0.72rem; line-height: 1.6; display: flex; align-items: center; justify-content: space-between; margin-top: 4px;">
+                                <div>
+                                    <span style="color:#ddd; font-weight:500; font-family:var(--font-mono);">${channelLabel}:</span>
+                                    <span style="color:${statusColor}; font-family:var(--font-mono); margin-left:6px;">${statusText}</span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 4px;">
+                                    ${actionHtml}
+                                </div>
+                            </div>
+                        `;
+                    });
+
+                    broadcastStatus.innerHTML = html;
+
+                    // Bind action event listeners dynamically
+                    broadcastStatus.querySelectorAll('.btn-channel-withdraw').forEach(btn => {
+                        btn.addEventListener('click', async (e) => {
+                            const ch = e.target.getAttribute('data-channel');
+                            if (!confirm('Withdraw this credential from verihash.org?\n\n• A signed "withdraw" tombstone will be published to preserve chain integrity.\n• The credential content will be retracted, but the hash stays queryable on the chain.')) return;
+                            
+                            btnBroadcast.disabled = true;
+                            btnBroadcast.innerText = '[ ⏳ WITHDRAWING... ]';
+                            const delResult = JSON.parse(await DeleteBroadcastVC(vcID, ch));
+                            if (delResult.error) {
+                                alert('Withdrawal failed: ' + delResult.error);
+                            }
+                            await updateBroadcastUI(vcID);
+                        });
+                    });
+
+                    broadcastStatus.querySelectorAll('.btn-channel-delete').forEach(btn => {
+                        btn.addEventListener('click', async (e) => {
+                            const ch = e.target.getAttribute('data-channel');
+                            if (!confirm('Delete this Gist from GitHub?\n\n• The Gist will be permanently physically deleted from GitHub.\n• The local credential will remain valid.')) return;
+                            
+                            btnBroadcast.disabled = true;
+                            btnBroadcast.innerText = '[ ⏳ DELETING GIST... ]';
+                            const delResult = JSON.parse(await DeleteBroadcastVC(vcID, ch));
+                            if (delResult.error) {
+                                alert('Delete failed: ' + delResult.error);
+                            }
+                            await updateBroadcastUI(vcID);
+                        });
+                    });
+
+                    broadcastStatus.querySelectorAll('.btn-channel-rebroadcast').forEach(btn => {
+                        btn.addEventListener('click', async (e) => {
+                            const ch = e.target.getAttribute('data-channel');
+                            if (!confirm('Re-broadcast this credential to GitHub Gist?\n\n• Content will be updated in-place (same URL) if Gist exists.\n• Otherwise, a new Gist is created.')) return;
+                            
+                            await ResetBroadcastVC(vcID, ch);
+                            await updateBroadcastUI(vcID);
+                        });
+                    });
+
+                    broadcastStatus.querySelectorAll('.btn-channel-reset').forEach(btn => {
+                        btn.addEventListener('click', async (e) => {
+                            const ch = e.target.getAttribute('data-channel');
+                            await ResetBroadcastVC(vcID, ch);
+                            await updateBroadcastUI(vcID);
+                        });
+                    });
+                }
+            }
+        } catch (e) {
+            console.error("Error updating broadcast UI: ", e);
+        }
+    }
+
+    if (btnBroadcast) {
+        btnBroadcast.addEventListener('click', async () => {
             if (!activeVcId) return;
 
-            // Double-check server state before sending — prevents race conditions
-            btnBroadcastGist.disabled = true;
-            btnBroadcastGist.innerText = '[ ⏳ CHECKING... ]';
+            btnBroadcast.disabled = true;
+            btnBroadcast.innerText = '[ ⏳ BROADCASTING... ]';
             if (broadcastStatus) broadcastStatus.style.display = 'none';
 
             try {
-                const pubs = await GetBroadcastStatus(activeVcId);
-                const gistPub = (pubs || []).find(p => p.channel === 'gist');
-
-                if (gistPub && gistPub.status === 'success') {
-                    // Already published — block and show link with re-broadcast option
-                    btnBroadcastGist.innerText = '[ ✅ GIST PUBLISHED ]';
-                    btnBroadcastGist.style.opacity = '0.55';
-                    btnBroadcastGist.style.cursor = 'not-allowed';
-                    if (broadcastStatus) {
-                        broadcastStatus.style.display = 'block';
-                        broadcastStatus.style.background = 'rgba(0,255,204,0.06)';
-                        broadcastStatus.style.color = 'rgba(0,255,204,0.8)';
-                        broadcastStatus.style.border = '1px solid rgba(0,255,204,0.2)';
-                        broadcastStatus.innerHTML = `✅ Published · <a href="${gistPub.remote_url}" style="color:#00ffcc;" target="_blank">${gistPub.remote_url}</a>
-                            &nbsp;<span id="btn-rebroadcast-link" style="cursor:pointer; color:rgba(0,200,255,0.7); font-size:0.62rem; border-bottom:1px dotted rgba(0,200,255,0.4);" title="Update Gist content in-place (or create new if deleted)">🔄 Re-broadcast</span>
-                            &nbsp;<span id="btn-delgist-link" style="cursor:pointer; color:rgba(255,80,80,0.75); font-size:0.62rem; border-bottom:1px dotted rgba(255,80,80,0.35);" title="Delete this Gist from GitHub. The local credential stays valid.">✕ Del-Gist</span>`;
-                        document.getElementById('btn-rebroadcast-link')?.addEventListener('click', async () => {
-                            if (!confirm('Re-broadcast this credential to GitHub Gist?\n\n• If the Gist still exists → content will be updated in-place (same URL)\n• If the Gist was deleted → a new Gist will be created')) return;
-                            await ResetBroadcastVC(activeVcId, 'gist');
-                            btnBroadcastGist.disabled = false;
-                            btnBroadcastGist.innerText = '[ 📡 BROADCAST GIST ]';
-                            btnBroadcastGist.style.opacity = '1';
-                            btnBroadcastGist.style.cursor = 'pointer';
-                            broadcastStatus.style.display = 'none';
-                        });
-                        document.getElementById('btn-delgist-link')?.addEventListener('click', async () => {
-                            if (!confirm('Delete this Gist from GitHub?\n\nThe local credential will remain valid. You can re-broadcast a fresh Gist afterwards.')) return;
-                            const delResult = JSON.parse(await DeleteBroadcastVC(activeVcId, 'gist'));
-                            if (delResult.error) {
-                                broadcastStatus.innerHTML = `✕ Delete failed: ${delResult.error}`;
-                                broadcastStatus.style.color = 'var(--warning)';
-                            } else {
-                                btnBroadcastGist.disabled = false;
-                                btnBroadcastGist.innerText = '[ 📡 BROADCAST GIST ]';
-                                btnBroadcastGist.style.opacity = '1';
-                                btnBroadcastGist.style.cursor = 'pointer';
-                                broadcastStatus.style.display = 'none';
-                            }
-                        });
-                    }
-                    return;
-                }
-
-                // Safe to broadcast
-                btnBroadcastGist.innerText = '[ 📡 BROADCASTING... ]';
-                btnBroadcastGist.style.opacity = '0.7';
                 const result = JSON.parse(await BroadcastVC(activeVcId));
                 if (result.error) {
-                    // Show error and re-enable for retry
                     if (broadcastStatus) {
                         broadcastStatus.style.display = 'block';
                         broadcastStatus.style.background = 'rgba(255,85,0,0.08)';
@@ -1871,80 +2140,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                         broadcastStatus.style.border = '1px solid rgba(255,85,0,0.4)';
                         broadcastStatus.innerText = '✕ ' + result.error;
                     }
-                    btnBroadcastGist.disabled = false;
-                    btnBroadcastGist.innerText = '[ 📡 BROADCAST GIST ]';
-                    btnBroadcastGist.style.opacity = '1';
+                    btnBroadcast.disabled = false;
+                    btnBroadcast.innerText = '[ 📡 BROADCAST ]';
                 } else {
-                    // Queued — show in-flight state and start polling for completion
-                    const polledVcId = activeVcId; // capture before drawer might close
-                    btnBroadcastGist.innerText = '[ 📡 BROADCASTING... ]';
-                    btnBroadcastGist.style.opacity = '0.6';
-                    if (broadcastStatus) {
-                        broadcastStatus.style.display = 'block';
-                        broadcastStatus.style.background = 'rgba(0,180,255,0.06)';
-                        broadcastStatus.style.color = 'rgba(0,200,255,0.85)';
-                        broadcastStatus.style.border = '1px solid rgba(0,180,255,0.25)';
-                        broadcastStatus.innerText = '📡 Broadcast queued — waiting for GitHub response...';
-                    }
-
-                    // Poll every 3 s, up to 40 attempts (~2 min), to cover the backend's
-                    // worst-case exponential backoff total (10+20+40+80+160 = 310s max,
-                    // but most failures resolve within the first 1-2 retries, ~60s).
-                    // A longer window prevents the UI from re-enabling the button while
-                    // a backend goroutine is still retrying, which would cause duplicates.
-                    let pollCount = 0;
-                    const pollInterval = setInterval(async () => {
-                        pollCount++;
-                        try {
-                            const pubs = await GetBroadcastStatus(polledVcId);
-                            const gistPub = (pubs || []).find(p => p.channel === 'gist');
-                            if (!gistPub) return; // not written yet, keep waiting
-
-                            if (gistPub.status === 'success') {
-                                clearInterval(pollInterval);
-                                // Only update UI if the same VC is still open
-                                if (activeVcId === polledVcId && btnBroadcastGist) {
-                                    btnBroadcastGist.disabled = true;
-                                    btnBroadcastGist.innerText = '[ ✅ GIST PUBLISHED ]';
-                                    btnBroadcastGist.style.opacity = '0.55';
-                                    btnBroadcastGist.style.cursor = 'not-allowed';
-                                }
-                                if (broadcastStatus && activeVcId === polledVcId) {
-                                    broadcastStatus.style.background = 'rgba(0,255,204,0.06)';
-                                    broadcastStatus.style.color = 'rgba(0,255,204,0.8)';
-                                    broadcastStatus.style.border = '1px solid rgba(0,255,204,0.2)';
-                                    broadcastStatus.innerHTML = `✅ Published to GitHub Gist · <a href="${gistPub.remote_url}" style="color:#00ffcc;" target="_blank">${gistPub.remote_url}</a>`;
-                                }
-                                // Refresh ledger badge too
-                                const badgeContainerId = 'badges-' + polledVcId.replace(/[^a-z0-9]/gi, '_');
-                                const badgeEl = document.getElementById(badgeContainerId);
-                                if (badgeEl) {
-                                    badgeEl.innerHTML = '';
-                                    const badge = document.createElement('span');
-                                    badge.style.cssText = 'font-size: 0.58rem; padding: 1px 5px; border-radius: 3px; background: rgba(0,0,0,0.4); border: 1px solid rgba(0,255,204,0.2); color: #00ffcc88; cursor: pointer; white-space: nowrap;';
-                                    badge.title = `GIST: success\n${gistPub.remote_url}`;
-                                    badge.innerText = `✅ GIST`;
-                                    badge.addEventListener('click', (e) => { e.stopPropagation(); window.open(gistPub.remote_url, '_blank'); });
-                                    badgeEl.appendChild(badge);
-                                }
-                            } else if (gistPub.status === 'failed' || pollCount >= 40) {
-                                clearInterval(pollInterval);
-                                if (activeVcId === polledVcId && btnBroadcastGist) {
-                                    btnBroadcastGist.disabled = false;
-                                    btnBroadcastGist.innerText = '[ 📡 BROADCAST GIST ]';
-                                    btnBroadcastGist.style.opacity = '1';
-                                    btnBroadcastGist.style.cursor = 'pointer';
-                                }
-                                if (broadcastStatus && activeVcId === polledVcId) {
-                                    const errMsg = gistPub.last_error || (pollCount >= 40 ? 'Timed out — check console for details' : 'Unknown error');
-                                    broadcastStatus.style.background = 'rgba(255,85,0,0.08)';
-                                    broadcastStatus.style.color = 'var(--warning)';
-                                    broadcastStatus.style.border = '1px solid rgba(255,85,0,0.4)';
-                                    broadcastStatus.innerText = '✕ Broadcast failed: ' + errMsg;
-                                }
-                            }
-                        } catch (_) { /* network hiccup — keep polling */ }
-                    }, 3000);
+                    // Update UI immediately to show pending/broadcasting state
+                    await updateBroadcastUI(activeVcId);
                 }
             } catch (e) {
                 if (broadcastStatus) {
@@ -1952,9 +2152,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     broadcastStatus.style.color = 'var(--warning)';
                     broadcastStatus.innerText = '✕ Error: ' + e;
                 }
-                btnBroadcastGist.disabled = false;
-                btnBroadcastGist.innerText = '[ 📡 BROADCAST GIST ]';
-                btnBroadcastGist.style.opacity = '1';
+                btnBroadcast.disabled = false;
+                btnBroadcast.innerText = '[ 📡 BROADCAST ]';
             }
         });
     }

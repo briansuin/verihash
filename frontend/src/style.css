@@ -527,8 +527,8 @@ select:focus {
 }
 
 .telemetry-panel {
-    height: calc(100vh - 200px);
-    /* 100% Strict Pixel Limit (Window Height - Header - Footer) */
+    flex: 1;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     background: var(--surface);

@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -27,12 +29,13 @@ import (
 // PRIVACY: project names, file names, and workspace paths are intentionally
 // excluded — they can contain client names, contract titles, or other PII.
 type BroadcastPayload struct {
-	VCID      string   `json:"vc_id"`
-	Issuer    string   `json:"issuer"`
-	IssuedAt  string   `json:"issued_at"`
-	AIInsight string   `json:"ai_insight"`
-	SkillTags []string `json:"skill_tags"`
-	VCHash    string   `json:"vc_hash"`
+	VCID        string   `json:"vc_id"`
+	Issuer      string   `json:"issuer"`
+	IssuedAt    string   `json:"issued_at"`
+	AIInsight   string   `json:"ai_insight"`
+	SkillTags   []string `json:"skill_tags"`
+	VCHash      string   `json:"vc_hash"`
+	PrevVCHash  string   `json:"prev_vc_hash,omitempty"`
 	Signature   string   `json:"proof_signature"`
 	AIEngine    string   `json:"ai_engine,omitempty"`
 	PublicTitle string   `json:"public_title,omitempty"`
@@ -48,16 +51,21 @@ type TombstonePayload struct {
 	RevokedAt       string `json:"revoked_at"`       // RFC3339
 	RevokeSignature string `json:"revoke_signature"` // Ed25519 hex
 	OriginalVCHash  string `json:"original_vc_hash"` // SHA256 of the original VC
+	PrevVCHash      string `json:"prev_vc_hash"`     // hash of the preceding block (for chain continuity)
+	// TombstoneType distinguishes the two revocation semantics:
+	//   "destroy"  — credential permanently destroyed; content irrecoverable
+	//   "withdraw" — credential un-published from server; still in local DB
+	TombstoneType   string `json:"tombstone_type"`
 }
 
 // NewBroadcastPayload constructs a sanitized BroadcastPayload from the DB.
 // It reads the full VC JSON, parses it, and extracts only the public fields.
 // Returns an error if the credential is not found or cannot be parsed.
 func NewBroadcastPayload(db *VeriHashDB, vcID string) (*BroadcastPayload, error) {
-	var fullJSON, vcHash string
+	var fullJSON, vcHash, prevVCHash string
 	err := db.conn.QueryRow(
-		`SELECT full_vc_json, COALESCE(vc_hash,'') FROM session_credentials WHERE vc_id = ?`, vcID,
-	).Scan(&fullJSON, &vcHash)
+		`SELECT full_vc_json, COALESCE(vc_hash,''), COALESCE(prev_vc_hash,'') FROM session_credentials WHERE vc_id = ?`, vcID,
+	).Scan(&fullJSON, &vcHash, &prevVCHash)
 	if err != nil {
 		return nil, fmt.Errorf("credential not found: %w", err)
 	}
@@ -87,12 +95,13 @@ func NewBroadcastPayload(db *VeriHashDB, vcID string) (*BroadcastPayload, error)
 	}
 
 	return &BroadcastPayload{
-		VCID:      vc.ID,
-		Issuer:    vc.Issuer,
-		IssuedAt:  vc.IssuanceDate,
-		AIInsight: stripSkillTagsFromAI(pow.AIEvaluation), // strip tags section for legacy credentials
-		SkillTags: tags,
-		VCHash:    vcHash,
+		VCID:        vc.ID,
+		Issuer:      vc.Issuer,
+		IssuedAt:    vc.IssuanceDate,
+		AIInsight:   stripSkillTagsFromAI(pow.AIEvaluation), // strip tags section for legacy credentials
+		SkillTags:   tags,
+		VCHash:      vcHash,
+		PrevVCHash:  prevVCHash,
 		Signature:   vc.Proof.ProofValue,
 		AIEngine:    pow.AIEngine,
 		PublicTitle: pow.PublicTitle,
@@ -120,6 +129,8 @@ type Broadcaster interface {
 	// Delete physically removes the broadcast artifact. Used only when clearing
 	// a broadcast record without revoking the credential (e.g. before re-publishing).
 	Delete(remoteID string) error
+	// PublishProfile publishes/updates the user's public profile info.
+	PublishProfile(profileJSON []byte) error
 }
 
 // ── BroadcastManager ─────────────────────────────────────────────────────────
@@ -136,6 +147,8 @@ type BroadcastManager struct {
 	broadcasters map[string]Broadcaster
 	db           *VeriHashDB
 	indexUpdater *IndexUpdater // Phase 4.5: notified on every successful Publish/Revoke
+	privKey      ed25519.PrivateKey // used to sign tombstones for destroyed credentials
+	pubKey       ed25519.PublicKey
 }
 
 // NewBroadcastManager creates an empty BroadcastManager.
@@ -146,16 +159,77 @@ func NewBroadcastManager(db *VeriHashDB) *BroadcastManager {
 	}
 }
 
+// SetKeys stores the identity key pair so the manager can autonomously sign
+// tombstones for credentials that were destroyed before being published.
+func (bm *BroadcastManager) SetKeys(privKey ed25519.PrivateKey, pubKey ed25519.PublicKey) {
+	bm.privKey = privKey
+	bm.pubKey = pubKey
+}
+
 // RegisterBroadcaster adds a broadcaster for the given channel.
 // Calling this with an already-registered channel replaces the old implementation.
 func (bm *BroadcastManager) RegisterBroadcaster(b Broadcaster) {
 	bm.broadcasters[b.Channel()] = b
 }
 
+// PublishProfile propagates the public profile updates to all registered channels asynchronously.
+func (bm *BroadcastManager) PublishProfile(profileJSON []byte) {
+	for _, b := range bm.broadcasters {
+		go func(br Broadcaster) {
+			if err := br.PublishProfile(profileJSON); err != nil {
+				log.Printf("[BROADCAST] Failed to publish profile to channel %s: %v", br.Channel(), err)
+			}
+		}(b)
+	}
+}
+
 // BroadcastVC queues the VC for broadcast on all registered channels and fires
 // them off concurrently in goroutines. It is intentionally fire-and-forget from
 // the caller's perspective; the DB is the source of truth for status.
+// If the credential is locally destroyed (status=0), a destroy tombstone is
+// sent instead of a regular publish — this fills chain gaps for credentials
+// that were revoked before ever being published to the server.
 func (bm *BroadcastManager) BroadcastVC(vcID string) {
+	// Check local status first
+	var localStatus int
+	var vcHash, prevVCHash string
+	_ = bm.db.conn.QueryRow(
+		`SELECT status, COALESCE(vc_hash,''), COALESCE(prev_vc_hash,'') FROM session_credentials WHERE vc_id = ?`, vcID,
+	).Scan(&localStatus, &vcHash, &prevVCHash)
+
+	// If credential is destroyed locally, send a destroy tombstone instead
+	if localStatus == 0 {
+		log.Printf("[BROADCAST] %s is destroyed locally — sending destroy tombstone to fill chain gap", vcID[:min(20, len(vcID))]+"...")
+		for _, b := range bm.broadcasters {
+			if b.Channel() != "verihash_org" {
+				continue
+			}
+			// Build a properly signed tombstone so the server accepts it
+			revokedAt := time.Now().UTC().Format(time.RFC3339)
+			did := pubKeyToDIDKey(bm.pubKey)
+			sigPayload := fmt.Sprintf("VERIHASH_DESTROY|%s|%s|%s", vcID, vcHash, did)
+			var sigHex string
+			if bm.privKey != nil {
+				sigHex = hex.EncodeToString(ed25519.Sign(bm.privKey, []byte(sigPayload)))
+			}
+			tombstone := TombstonePayload{
+				VCID:            vcID,
+				IssuerDID:       did,
+				RevokedAt:       revokedAt,
+				RevokeSignature: sigHex,
+				OriginalVCHash:  vcHash,
+				PrevVCHash:      prevVCHash,
+				TombstoneType:   "destroy",
+			}
+			go func(br Broadcaster, ts TombstonePayload) {
+				if err := bm.RevokeBroadcast(ts.VCID, br.Channel(), ts); err != nil {
+					log.Printf("[BROADCAST] destroy tombstone failed for %s: %v", ts.VCID[:min(20, len(ts.VCID))]+"...", err)
+				}
+			}(b, tombstone)
+		}
+		return
+	}
+
 	payload, err := NewBroadcastPayload(bm.db, vcID)
 	if err != nil {
 		log.Printf("[BROADCAST] Failed to build payload for %s: %v", vcID, err)
@@ -172,6 +246,60 @@ func (bm *BroadcastManager) BroadcastVC(vcID string) {
 		// Launch each channel's publish in a separate goroutine
 		go bm.runWithRetry(b, *payload)
 	}
+}
+
+// BroadcastVCToNode is like BroadcastVC but only sends to the verihash_org
+// channel. Use this for chain-sync operations to avoid triggering rate limits
+// on other channels (e.g. GitHub Gist).
+func (bm *BroadcastManager) BroadcastVCToNode(vcID string) {
+	b, ok := bm.broadcasters["verihash_org"]
+	if !ok {
+		log.Printf("[BROADCAST] verihash_org channel not registered, skipping %s", vcID[:min(20, len(vcID))]+"...")
+		return
+	}
+
+	// Check local status
+	var localStatus int
+	var vcHash, prevVCHash string
+	_ = bm.db.conn.QueryRow(
+		`SELECT status, COALESCE(vc_hash,''), COALESCE(prev_vc_hash,'') FROM session_credentials WHERE vc_id = ?`, vcID,
+	).Scan(&localStatus, &vcHash, &prevVCHash)
+
+	if localStatus == 0 {
+		// Destroyed credential — send a destroy tombstone
+		revokedAt := time.Now().UTC().Format(time.RFC3339)
+		did := pubKeyToDIDKey(bm.pubKey)
+		sigPayload := fmt.Sprintf("VERIHASH_DESTROY|%s|%s|%s", vcID, vcHash, did)
+		var sigHex string
+		if bm.privKey != nil {
+			sigHex = hex.EncodeToString(ed25519.Sign(bm.privKey, []byte(sigPayload)))
+		}
+		tombstone := TombstonePayload{
+			VCID:            vcID,
+			IssuerDID:       did,
+			RevokedAt:       revokedAt,
+			RevokeSignature: sigHex,
+			OriginalVCHash:  vcHash,
+			PrevVCHash:      prevVCHash,
+			TombstoneType:   "destroy",
+		}
+		if err := bm.RevokeBroadcast(vcID, "verihash_org", tombstone); err != nil {
+			log.Printf("[SYNC] destroy tombstone failed for %s: %v", vcID[:min(20, len(vcID))]+"...", err)
+		}
+		return
+	}
+
+	// Active credential — publish normally to verihash_org only
+	payload, err := NewBroadcastPayload(bm.db, vcID)
+	if err != nil {
+		log.Printf("[SYNC] Failed to build payload for %s: %v", vcID, err)
+		return
+	}
+	if err := bm.db.UpsertBroadcastJob(vcID, "verihash_org"); err != nil {
+		log.Printf("[SYNC] DB upsert failed for (%s, verihash_org): %v", vcID, err)
+		return
+	}
+	bm.runWithRetry(b, *payload) // synchronous — caller handles pacing
 }
 
 // runWithRetry executes Publish (or Update for re-broadcasts) with exponential
@@ -281,7 +409,14 @@ func (bm *BroadcastManager) RevokeBroadcast(vcID, channel string, tombstone Tomb
 		}
 	}
 	if remoteID == "" {
-		return fmt.Errorf("no remote_id found for (%s, %s) — cannot revoke", vcID, channel)
+		// Credential was never published to this channel.
+		// For verihash_org we still send the tombstone so the server can
+		// store a revoked placeholder block and preserve chain integrity.
+		// For other channels (e.g. gist) there is nothing to tombstone.
+		if channel != "verihash_org" {
+			return fmt.Errorf("no remote_id found for (%s, %s) — cannot revoke", vcID, channel)
+		}
+		remoteID = vcID // use vc_id as the identifier for the server
 	}
 
 	remoteURL, err := b.Revoke(remoteID, tombstone)
@@ -331,6 +466,11 @@ func NewGitHubGistBroadcaster(pat string) *GitHubGistBroadcaster {
 }
 
 func (g *GitHubGistBroadcaster) Channel() string { return "gist" }
+
+func (g *GitHubGistBroadcaster) PublishProfile(profileJSON []byte) error {
+	// Gist's profile sync is handled by IndexUpdater as part of the root index gist update.
+	return nil
+}
 
 // Publish creates a new public Gist containing the sanitized BroadcastPayload JSON.
 // Returns the Gist ID and HTML URL on success.
@@ -1027,4 +1167,107 @@ func (iu *IndexUpdater) doUpdate() {
 		log.Printf("[INDEX] \u2713 Root index updated at %s (%d VCs, %d revocations)",
 			gistURL, len(index.RecentVCs), len(index.Revocations))
 	}
+}
+
+
+// NukeRemote gracefully revokes or deletes all credentials on selected remote platforms.
+// 404 Not Found errors during deletion are swallowed and treated as successes.
+func (bm *BroadcastManager) NukeRemote(channels []string, appPrivKey ed25519.PrivateKey, appPubKey ed25519.PublicKey, did string, githubPAT string) (int, error) {
+	nukedCount := 0
+
+	for _, ch := range channels {
+		var broadcaster Broadcaster
+		if b, ok := bm.broadcasters[ch]; ok {
+			broadcaster = b
+		} else {
+			// Instantiate temporary broadcaster if unchecked in settings but selected in modal
+			if ch == "gist" && githubPAT != "" {
+				broadcaster = NewGitHubGistBroadcaster(githubPAT)
+			} else if ch == "verihash_org" {
+				broadcaster = NewVeriHashNodeBroadcaster("https://verihash.org", appPrivKey, appPubKey)
+			} else {
+				log.Printf("[NUKE] Skipping channel %s: no broadcaster available", ch)
+				continue
+			}
+		}
+
+		rows, err := bm.db.conn.Query(`
+			SELECT vc_id, remote_id 
+			FROM broadcast_publications 
+			WHERE channel = ? AND status = 'success'`, ch)
+		if err != nil {
+			log.Printf("[NUKE] Failed to query DB for %s: %v", ch, err)
+			continue
+		}
+
+		type Target struct {
+			VCID     string
+			RemoteID string
+		}
+		var targets []Target
+		for rows.Next() {
+			var t Target
+			if err := rows.Scan(&t.VCID, &t.RemoteID); err == nil {
+				targets = append(targets, t)
+			}
+		}
+		rows.Close()
+
+		for _, t := range targets {
+			log.Printf("[NUKE] Nuking %s on %s (remote_id: %s)", t.VCID, ch, t.RemoteID)
+
+			if ch == "gist" {
+				err = broadcaster.Delete(t.RemoteID)
+				// Swallow 404 Not Found errors since physical deletion is our goal anyway
+				if err != nil && !strings.Contains(err.Error(), "404") {
+					log.Printf("[NUKE] Failed to delete Gist %s: %v", t.RemoteID, err)
+					continue
+				}
+				bm.db.UpdateBroadcastStatus(t.VCID, ch, "deleted", t.RemoteID, "", "")
+			} else {
+				// For verihash.org: send a "withdraw" tombstone so the server keeps
+				// the block in the chain but marks it as withdrawn (not destroyed).
+				var vcHash string
+				err := bm.db.conn.QueryRow(`SELECT vc_hash FROM session_credentials WHERE vc_id = ?`, t.VCID).Scan(&vcHash)
+				if err != nil {
+					log.Printf("[NUKE] Missing local VC %s: %v", t.VCID, err)
+					continue
+				}
+
+				revokedAt := time.Now().UTC().Format(time.RFC3339)
+				payload := fmt.Sprintf("VERIHASH_REVOKE|%s|%s|%s", t.VCID, vcHash, did)
+				signatureBytes := ed25519.Sign(appPrivKey, []byte(payload))
+
+				tombstone := TombstonePayload{
+					VCID:            t.VCID,
+					IssuerDID:       did,
+					RevokedAt:       revokedAt,
+					RevokeSignature: hex.EncodeToString(signatureBytes),
+					OriginalVCHash:  vcHash,
+					TombstoneType:   "withdraw", // credential still exists locally
+				}
+
+				_, err = broadcaster.Revoke(t.RemoteID, tombstone)
+				if err != nil && !strings.Contains(err.Error(), "404") {
+					log.Printf("[NUKE] Failed to revoke %s on %s: %v", t.VCID, ch, err)
+					continue
+				}
+				bm.db.UpdateBroadcastStatus(t.VCID, ch, "revoked", t.RemoteID, "", "")
+			}
+			nukedCount++
+		}
+
+		// Phase 5: Clean up all failed publications on this channel since they never
+		// reached the remote platform anyway. Updating them to 'deleted' hides them
+		// from the Ledger badges, giving the user a completely pristine slate.
+		_, err = bm.db.conn.Exec(`
+			UPDATE broadcast_publications 
+			SET status = 'deleted' 
+			WHERE channel = ? AND status = 'failed'`, ch)
+		if err != nil {
+			log.Printf("[NUKE] Failed to clear failed status rows for %s: %v", ch, err)
+		}
+	}
+
+	return nukedCount, nil
 }

@@ -260,9 +260,9 @@
                             <button class="cyber-btn sm" id="btn-verify-sig"
                                 title="Cryptographically verify the Ed25519 signature on this credential"
                                 style="border-color: rgba(0,255,204,0.35);">[ VERIFY SIGNATURE ]</button>
-                            <button class="cyber-btn sm" id="btn-broadcast-gist"
-                                title="Broadcast this credential as a sanitized public Gist."
-                                style="border-color: rgba(0,180,255,0.45); color: rgba(0,200,255,0.9);">[ 📡 BROADCAST GIST ]</button>
+                            <button class="cyber-btn sm" id="btn-broadcast"
+                                title="Broadcast this credential to configured active channels."
+                                style="border-color: rgba(0,180,255,0.45); color: rgba(0,200,255,0.9);">[ 📡 BROADCAST ]</button>
                             <button class="cyber-btn sm revoke-btn" id="btn-revoke-credential"
                                 title="Soft-revoke this credential.">[ REVOKE ]</button>
                         </div>
@@ -299,6 +299,7 @@
                             <span class="identity-label">// NODE IDENTITY</span>
                             <div class="identity-actions">
                                 <span class="node-health" id="node-health">● SIGNAL: STRONG</span>
+                                <button class="icon-btn" id="btn-toggle-ai-panel" title="Collapse AI Panel">▲</button>
                                 <button class="icon-btn" id="btn-settings" title="Global Settings">⚙</button>
                                 <button class="icon-btn lock-btn" id="btn-lock" title="Lock Identity Vault"
                                     style="color: #ff6666;">🔒</button>
@@ -310,9 +311,9 @@
                         </div>
                         <div class="copy-toast" id="copy-toast">Copied!</div>
                     </div>
-
+ 
                     <!-- AI Context Engine (Custom Dropdown) -->
-                    <section class="config-panel" style="margin-bottom: 0;">
+                    <section class="config-panel" id="ai-config-panel" style="margin-bottom: 0;">
                         <div class="input-group" style="margin-bottom: 15px;">
                             <label>AI CONTEXT ENGINE <span id="ai-security-badge"
                                     style="float: right; color: #00ffcc; font-size: 0.6rem; margin-top: 2px;">[ 100%
@@ -443,17 +444,39 @@
                 <div class="modal-section" style="margin-top: 15px;">
                     <div class="modal-section-title"
                         style="display: flex; justify-content: space-between; align-items: center;">
-                        <span>📡 BROADCAST CHANNEL :: GITHUB GIST</span>
-                        <span id="broadcast-gist-status" style="font-size: 0.6rem; color: #888;">NOT CONFIGURED</span>
+                        <span>📡 BROADCAST CHANNEL</span>
+                        <span id="broadcast-gist-status" style="font-size: 0.6rem; color: #888;"></span>
                     </div>
-                    <div class="modal-section-desc">GitHub Personal Access Token (PAT) with <strong>gist</strong> scope. Once configured, minted credentials are automatically broadcast to a public Gist as a sanitized public payload. <strong style="color: #00ffcc;">Full paths and raw diffs never leave your machine.</strong></div>
-                    <div class="exclusion-input-group" style="margin-top: 10px; display: flex; gap: 8px;">
-                        <input type="password" id="input-github-pat"
-                            placeholder="ghp_xxxxxxxxxxxx..."
-                            style="flex: 1; padding: 6px 10px; font-size: 0.8rem; background: rgba(0,0,0,0.3); border: 1px solid rgba(0,255,204,0.3); color: var(--primary); outline: none; font-family: var(--font-mono);">
-                        <button class="cyber-btn sm" id="btn-save-github-pat" style="font-size: 0.65rem; padding: 0 10px;">[ SAVE ]</button>
+                    <div class="modal-section-desc">Choose where to broadcast minted credentials.</div>
+                    
+                    <div class="input-group" style="margin-top: 10px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 8px;">
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                            <input type="checkbox" id="chk-channel-verihash" value="verihash_org" style="accent-color: #00ffcc; cursor: pointer;">
+                            <span style="font-size: 0.8rem; color: var(--primary);">VeriHash.org Official Relay</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                            <input type="checkbox" id="chk-channel-gist" value="gist" style="accent-color: #00ffcc; cursor: pointer;">
+                            <span style="font-size: 0.8rem; color: var(--primary);">GitHub Gist (Requires Token)</span>
+                        </label>
                     </div>
-                    <div id="github-pat-feedback" style="margin-top: 6px; font-size: 0.68rem; color: #888;"></div>
+
+                    <div id="github-pat-container" style="display: none;">
+                        <div class="modal-section-desc">GitHub Personal Access Token (PAT) with <strong>gist</strong> scope. Once configured, minted credentials are automatically broadcast to a public Gist as a sanitized public payload. <strong style="color: #00ffcc;">Full paths and raw diffs never leave your machine.</strong></div>
+                        <div class="exclusion-input-group" style="margin-top: 10px; display: flex; gap: 8px;">
+                            <input type="password" id="input-github-pat"
+                                placeholder="ghp_xxxxxxxxxxxx..."
+                                style="flex: 1; padding: 6px 10px; font-size: 0.8rem; background: rgba(0,0,0,0.3); border: 1px solid rgba(0,255,204,0.3); color: var(--primary); outline: none; font-family: var(--font-mono);">
+                            <button class="cyber-btn sm" id="btn-save-github-pat" style="font-size: 0.65rem; padding: 0 10px;">[ SAVE ]</button>
+                        </div>
+                        <div id="github-pat-feedback" style="margin-top: 6px; font-size: 0.68rem; color: #888;"></div>
+                    </div>
+
+                    <!-- Nuke Remote Zone -->
+                    <div style="margin-top: 20px; padding: 15px; background: rgba(255, 51, 102, 0.05); border: 1px dashed rgba(255, 51, 102, 0.3); border-radius: 4px;">
+                        <div class="modal-section-title" style="color: #ff3366;">DANGER ZONE</div>
+                        <div class="modal-section-desc" style="margin-top: 5px;">Permanently wipe all published credentials from external broadcast channels. This does not affect your local database.</div>
+                        <button class="cyber-btn" id="btn-open-nuke" style="margin-top: 10px; width: 100%; border-color: #ff3366; color: #ff3366; background: rgba(255, 51, 102, 0.1);">[ NUKE REMOTE CREDENTIALS ]</button>
+                    </div>
                 </div>
 
                 <div class="modal-section" style="margin-top: 15px;">
@@ -542,7 +565,44 @@
         </div>
     </div>
 
-    <script src="./src/main.js" type="module"></script>
-</body>
+    <div class="modal-overlay" id="nuke-modal">
+        <div class="modal-box" style="border-color: #ff3366;">
+            <div class="modal-header">
+                <span class="modal-title" style="color: #ff3366;">// DANGER_ZONE :: NUKE REMOTE</span>
+                <button class="modal-close" id="btn-nuke-close" title="Close">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="modal-section-desc">
+                    <p style="color: #ff3366; margin-bottom: 10px;"><strong>WARNING: This action is irreversible.</strong></p>
+                    <p style="margin-bottom: 15px;">Selected channels will be thoroughly purged of all your published credentials. This does NOT affect your local LEDGER, but recovery of the public timeline requires re-publishing them one by one.</p>
+                </div>
+                
+                <div class="modal-section-title">SELECT PLATFORMS TO NUKE:</div>
+                <div class="input-group" style="margin-top: 10px; margin-bottom: 15px; display: flex; flex-direction: column; gap: 10px;">
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" id="chk-nuke-verihash" value="verihash_org" style="accent-color: #ff3366; cursor: pointer;">
+                        <span style="font-size: 0.8rem; color: #ddd;">VeriHash.org Official Relay</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" id="chk-nuke-gist" value="gist" style="accent-color: #ff3366; cursor: pointer;">
+                        <span style="font-size: 0.8rem; color: #ddd;">GitHub Gist</span>
+                    </label>
+                </div>
 
+                <div class="modal-section-title" style="margin-top: 10px;">CONFIRM VAULT PASSWORD:</div>
+                <input type="password" id="input-nuke-password" placeholder="Enter vault password..." 
+                    style="width: 100%; margin-top: 8px; padding: 10px; font-size: 0.9rem; background: rgba(0,0,0,0.5); border: 1px solid rgba(255, 51, 102, 0.4); color: var(--primary); outline: none;">
+                
+                <div id="nuke-feedback" style="margin-top: 10px; font-size: 0.75rem; color: #ff3366; display: none;"></div>
+
+                <div style="display: flex; gap: 10px; margin-top: 25px;">
+                    <button class="cyber-btn" id="btn-nuke-cancel" style="flex: 1; border-color: #666; color: #aaa;">[ CANCEL ]</button>
+                    <button class="cyber-btn" id="btn-nuke-execute" style="flex: 1; border-color: #ff3366; color: #ff3366; background: rgba(255, 51, 102, 0.1);">[ EXECUTE NUKE ]</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script type="module" src="./src/main.js"></script>
+</body>
 </html>

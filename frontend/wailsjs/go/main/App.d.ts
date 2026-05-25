@@ -46,6 +46,8 @@ export function LockVault():Promise<string>;
 
 export function MigrateWallet(arg1:string,arg2:string):Promise<string>;
 
+export function NukeRemoteCredentials(arg1:Array<string>,arg2:string):Promise<string>;
+
 export function ResetBroadcastVC(arg1:string,arg2:string):Promise<string>;
 
 export function ResolveDroppedPath(arg1:string):Promise<string>;
@@ -56,7 +58,7 @@ export function RestoreDataFromSync():Promise<string>;
 
 export function RevokeCredential(arg1:string):Promise<string>;
 
-export function SaveConfig(arg1:Array<string>,arg2:string,arg3:string,arg4:string,arg5:string,arg6:Array<string>,arg7:string):Promise<string>;
+export function SaveConfig(arg1:Array<string>,arg2:string,arg3:string,arg4:string,arg5:string,arg6:Array<string>,arg7:string,arg8:Array<string>):Promise<string>;
 
 export function SaveProfileInfo(arg1:string,arg2:string,arg3:string):Promise<string>;
 
@@ -69,6 +71,8 @@ export function SaveWindowState(arg1:boolean):Promise<void>;
 export function SelectDirectory():Promise<string>;
 
 export function StartWatchdog():Promise<string>;
+
+export function SyncChainToNode():Promise<string>;
 
 export function ToggleAutoStart(arg1:boolean):Promise<void>;
 
