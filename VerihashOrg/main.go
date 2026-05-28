@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -19,6 +20,9 @@ import (
 	"github.com/gin-gonic/gin"
 	_ "modernc.org/sqlite"
 )
+
+//go:embed favicon.png
+var faviconBytes []byte
 
 type PublishCredentialRequest struct {
 	DID       string          `json:"did" binding:"required"`
@@ -515,6 +519,13 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"message": "pong"})
 	})
 
+	r.GET("/favicon.ico", func(c *gin.Context) {
+		c.Data(http.StatusOK, "image/png", faviconBytes)
+	})
+	r.GET("/favicon.png", func(c *gin.Context) {
+		c.Data(http.StatusOK, "image/png", faviconBytes)
+	})
+
 	v1 := r.Group("/v1")
 	v1.Use(RateLimitMiddleware())
 	{
@@ -534,6 +545,7 @@ func main() {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>VeriHash.org — AI-Native Public Gateway for Work Credentials</title>
   <meta name="description" content="VeriHash.org is a lightweight, machine-readable public node for VeriHash credentials, designed for AI systems, search engines, and future agents.">
+  <link rel="icon" type="image/png" href="/favicon.png" />
   <style>
     :root {
       --bg-color: #0b0e14;
@@ -1410,6 +1422,7 @@ func main() {
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>VeriHash Identity - %s</title>
+    <link rel="icon" type="image/png" href="/favicon.png" />
     <style>
         :root {
             --bg-color: #0b0e14;
@@ -1819,6 +1832,7 @@ func renderCredentialHTML(c *gin.Context, did string, vc SingleVCDisplay) {
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>%s - VeriHash Credential</title>
+    <link rel="icon" type="image/png" href="/favicon.png" />
     <style>
         :root {
             --bg-color: #0b0e14;
@@ -2027,6 +2041,7 @@ func renderTombstoneHTML(c *gin.Context, did, vcID, tombType, revokedAt, signatu
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Revoked Credential - VeriHash</title>
+    <link rel="icon" type="image/png" href="/favicon.png" />
     <style>
         :root {
             /* Default to Dark - Destroyed variables */
