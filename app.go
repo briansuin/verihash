@@ -400,12 +400,6 @@ func (a *App) LoadConfig() Config {
 		a.baseURL = cfg.BaseURL
 		a.cloudSyncDirs = cfg.CloudSyncDirs
 		a.ignoredPatterns = cfg.IgnoredPatterns
-		// Re-register broadcasters whenever config reloads
-		if a.broadcastManager != nil {
-			if cfg.GitHubPAT != "" {
-				a.broadcastManager.RegisterBroadcaster(NewGitHubGistBroadcaster(cfg.GitHubPAT))
-			}
-		}
 	}
 	return cfg
 }
@@ -911,7 +905,14 @@ func (a *App) RestoreDataFromSync() string {
 
 	// ── Step 4: Restart IndexUpdater with the new DB handle ──
 	cfg := a.LoadConfig()
-	if cfg.GitHubPAT != "" {
+	isGistActive := false
+	for _, ch := range cfg.ActiveChannels {
+		if ch == "gist" {
+			isGistActive = true
+			break
+		}
+	}
+	if isGistActive && cfg.GitHubPAT != "" {
 		broadcaster := NewGitHubGistBroadcaster(cfg.GitHubPAT)
 		iu := NewIndexUpdater(a.db, broadcaster, configPath)
 		a.indexUpdater = iu
