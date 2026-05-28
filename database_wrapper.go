@@ -91,6 +91,11 @@ func initDB() error {
 	db.Exec(`DELETE FROM broadcast_publications
 		WHERE status = 'pending' AND attempt_count = 0 AND remote_id = '';`)
 
+	// Migration: automatically update any historical localhost:8080 URLs to the production domain.
+	db.Exec(`UPDATE broadcast_publications 
+		SET remote_url = REPLACE(remote_url, 'http://localhost:8080', 'https://verihash.org')
+		WHERE remote_url LIKE 'http://localhost:8080%';`)
+
 	return nil
 }
 

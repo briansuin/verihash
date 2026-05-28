@@ -270,11 +270,12 @@ func handlePostCredential(c *gin.Context) {
 		return
 	}
 
+	strippedDID := strings.TrimPrefix(req.DID, "did:key:")
 	c.JSON(http.StatusOK, gin.H{
 		"status": "ok",
 		"did":    req.DID,
 		"vc_id":  payload.VCID,
-		"url":    fmt.Sprintf("/u/%s/credentials/%s.json", url.PathEscape(req.DID), url.PathEscape(payload.VCID)),
+		"url":    fmt.Sprintf("/u/%s/credentials/%s.json", url.PathEscape(strippedDID), url.PathEscape(payload.VCID)),
 	})
 }
 
@@ -884,7 +885,8 @@ func main() {
 			if err := rows.Scan(&did); err != nil {
 				continue
 			}
-			encodedDID := url.PathEscape(did)
+			strippedDID := strings.TrimPrefix(did, "did:key:")
+			encodedDID := url.PathEscape(strippedDID)
 			sb.WriteString(fmt.Sprintf(
 				"  <url>\n    <loc>https://verihash.org/u/%s</loc>\n    <changefreq>daily</changefreq>\n    <priority>0.8</priority>\n  </url>\n",
 				encodedDID,
@@ -948,7 +950,8 @@ func main() {
 				}
 			}
 
-			encodedDID := url.PathEscape(did)
+			strippedDID := strings.TrimPrefix(did, "did:key:")
+			encodedDID := url.PathEscape(strippedDID)
 			if displayName != "" {
 				sb.WriteString(fmt.Sprintf("### %s\n", displayName))
 			} else {
@@ -977,6 +980,9 @@ func main() {
 			did := c.Param("did")
 			if decoded, err := url.PathUnescape(did); err == nil {
 				did = decoded
+			}
+			if !strings.HasPrefix(did, "did:") {
+				did = "did:key:" + did
 			}
 			page := 1
 			if p, err := strconv.Atoi(c.Query("page")); err == nil && p > 0 {
@@ -1009,7 +1015,8 @@ func main() {
 			defer rows.Close()
 
 			var sb strings.Builder
-			encodedDID := url.PathEscape(did)
+			strippedDID := strings.TrimPrefix(did, "did:key:")
+			encodedDID := url.PathEscape(strippedDID)
 
 			// Header
 			sb.WriteString("# VeriHash Identity Profile\n\n")
@@ -1124,6 +1131,9 @@ func main() {
 			if decoded, err := url.PathUnescape(did); err == nil {
 				did = decoded
 			}
+			if !strings.HasPrefix(did, "did:") {
+				did = "did:key:" + did
+			}
 			rows, err := db.Query(`SELECT vc_id, payload_json FROM credentials WHERE did = ? AND status = 'active' ORDER BY issued_at DESC`, did)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "db_query_failed"})
@@ -1190,6 +1200,9 @@ func main() {
 			did := c.Param("did")
 			if decoded, err := url.PathUnescape(did); err == nil {
 				did = decoded
+			}
+			if !strings.HasPrefix(did, "did:") {
+				did = "did:key:" + did
 			}
 			vcID := c.Param("vc_id")
 			if decoded, err := url.PathUnescape(vcID); err == nil {
@@ -1285,6 +1298,9 @@ func main() {
 			did := c.Param("did")
 			if decoded, err := url.PathUnescape(did); err == nil {
 				did = decoded
+			}
+			if !strings.HasPrefix(did, "did:") {
+				did = "did:key:" + did
 			}
 			page := 1
 			if p, err := strconv.Atoi(c.Query("page")); err == nil && p > 0 {
@@ -1701,7 +1717,8 @@ func main() {
 
 			// ── Pagination controls ───────────────────────────────────────────
 			if totalPages > 1 {
-				encodedDID := url.PathEscape(did)
+				strippedDID := strings.TrimPrefix(did, "did:key:")
+				encodedDID := url.PathEscape(strippedDID)
 				prevClass, nextClass := "pag-btn", "pag-btn"
 				prevHref, nextHref := fmt.Sprintf("/u/%s?page=%d", encodedDID, page-1), fmt.Sprintf("/u/%s?page=%d", encodedDID, page+1)
 				if page <= 1 {
@@ -1979,7 +1996,7 @@ func renderCredentialHTML(c *gin.Context, did string, vc SingleVCDisplay) {
 </body>
 </html>`,
 		html.EscapeString(title),
-		url.PathEscape(did),
+		url.PathEscape(strings.TrimPrefix(did, "did:key:")),
 		html.EscapeString(title),
 		html.EscapeString(vc.VCID),
 		html.EscapeString(engineName),
@@ -2223,7 +2240,7 @@ func renderTombstoneHTML(c *gin.Context, did, vcID, tombType, revokedAt, signatu
 </body>
 </html>`,
 		badgeClass,
-		url.PathEscape(did),
+		url.PathEscape(strings.TrimPrefix(did, "did:key:")),
 		badgeClass,
 		label,
 		label,
