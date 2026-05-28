@@ -1484,7 +1484,7 @@ func main() {
         body.theme-light .profile-custom-header { border-top: 1px solid var(--meta-border); }
         .card { border: var(--card-border); padding: 1.5rem; margin-bottom: 1.5rem; background: var(--card-bg); border-radius: 4px; transition: background 0.25s, border-color 0.25s; }
         .title { font-size: 1.2rem; color: var(--accent); margin-bottom: 0.5rem; font-weight: bold; }
-        .meta { font-size: 0.75rem; color: var(--meta-color); margin-bottom: 12px; border-bottom: var(--meta-border); padding-bottom: 8px; }
+        .meta { font-size: 0.75rem; color: var(--meta-color); margin-bottom: 12px; border-bottom: var(--meta-border); padding-bottom: 8px; word-break: break-all; }
         .tags { color: var(--accent); font-size: 0.8rem; margin-bottom: 12px; display: flex; flex-wrap: wrap; gap: 6px; }
         .tag { }
         .insight-header { font-size: 0.8rem; margin-top: 15px; margin-bottom: 10px; display: flex; justify-content: space-between; }
@@ -1875,7 +1875,7 @@ func renderCredentialHTML(c *gin.Context, did string, vc SingleVCDisplay) {
 
         body { background: var(--bg-color); color: var(--text-color); font-family: var(--font-family); padding: 2rem; max-width: 800px; margin: 0 auto; transition: background 0.25s, color 0.25s; }
         h1 { color: var(--h1-color); font-size: 1.4rem; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
-        .meta { font-size: 0.75rem; color: var(--meta-color); margin-bottom: 20px; border-bottom: var(--meta-border); padding-bottom: 8px; }
+        .meta { font-size: 0.75rem; color: var(--meta-color); margin-bottom: 20px; border-bottom: var(--meta-border); padding-bottom: 8px; word-break: break-all; }
         .card { border: var(--card-border); padding: 2rem; background: var(--card-bg); border-radius: 6px; position: relative; box-shadow: var(--card-shadow); transition: background 0.25s, border-color 0.25s; }
         .status-badge { position: absolute; top: 1.5rem; right: 1.5rem; font-size: 0.72rem; padding: 3px 8px; border-radius: 3px; font-weight: bold; border: 1px solid; letter-spacing: 0.05em; }
         .status-badge.active { border-color: var(--badge-border); color: var(--badge-color); background: var(--badge-bg); }
@@ -2107,7 +2107,7 @@ func renderTombstoneHTML(c *gin.Context, did, vcID, tombType, revokedAt, signatu
 
         body { background: var(--bg-color); color: var(--text-color); font-family: var(--font-family); padding: 2rem; max-width: 800px; margin: 0 auto; transition: background 0.25s, color 0.25s; }
         h1 { color: var(--accent); font-size: 1.4rem; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
-        .meta { font-size: 0.75rem; color: var(--meta-color); margin-bottom: 20px; border-bottom: 1px dashed var(--accent-dim); padding-bottom: 8px; }
+        .meta { font-size: 0.75rem; color: var(--meta-color); margin-bottom: 20px; border-bottom: 1px dashed var(--accent-dim); padding-bottom: 8px; word-break: break-all; }
         body.theme-light .meta { border-bottom: 1px solid var(--accent-dim); }
         .card { border: 1px solid var(--btn-border); padding: 2rem; background: var(--accent-bg); border-radius: 6px; position: relative; box-shadow: var(--card-shadow); transition: background 0.25s, border-color 0.25s; }
         .status-badge { position: absolute; top: 1.5rem; right: 1.5rem; font-size: 0.72rem; padding: 3px 8px; border-radius: 3px; font-weight: bold; border: 1px solid; letter-spacing: 0.05em; }
