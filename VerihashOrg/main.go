@@ -2,7 +2,7 @@ package main
 
 import (
 	"database/sql"
-	"embed"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"html"
