@@ -838,7 +838,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (result.error) {
                     if (feedback) { feedback.innerText = '✗ ' + result.error; feedback.style.color = '#ff6666'; }
                 } else {
-                    if (feedback) { feedback.innerText = '✓ Profile saved. Index Gist will update shortly.'; feedback.style.color = '#00ffcc'; }
+                    if (feedback) { feedback.innerText = '✓ Profile saved.'; feedback.style.color = '#00ffcc'; }
                     setTimeout(() => { if (feedback) feedback.innerText = ''; }, 4000);
                 }
             } catch (e) {
