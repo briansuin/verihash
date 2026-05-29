@@ -758,10 +758,10 @@ func main() {
     }
   </style>
 </head>
-<body>
+<body class="theme-light">
   <div class="page-wrap">
     <div style="display: flex; justify-content: flex-end; margin-bottom: 1.5rem;">
-      <button id="theme-toggle-btn" class="theme-switch">🌓 LIGHT MODE</button>
+      <button id="theme-toggle-btn" class="theme-switch">🌓 DARK MODE</button>
     </div>
 
     <header class="site-header">
@@ -858,7 +858,7 @@ func main() {
         }
     }
 
-    const isLight = themeParam === 'light' || (!themeParam && savedTheme === 'light');
+    const isLight = themeParam === 'light' || (themeParam !== 'dark' && savedTheme !== 'dark');
     setTheme(isLight);
 
     if (btn) {
@@ -1565,10 +1565,10 @@ func main() {
         }
     </style>
 </head>
-<body>
+<body class="theme-light">
     <div class="header-row">
         <a href="/" class="back-link">&lt; Back to Gateway Home</a>
-        <button id="theme-toggle-btn" class="theme-switch">🌓 LIGHT MODE</button>
+        <button id="theme-toggle-btn" class="theme-switch">🌓 DARK MODE</button>
     </div>
     <h1>_VERIHASH IDENTITY</h1>
     <div class="did">%s</div>
@@ -1770,7 +1770,7 @@ func main() {
             }
         }
 
-        const isLight = themeParam === 'light' || (!themeParam && savedTheme === 'light');
+        const isLight = themeParam === 'light' || (themeParam !== 'dark' && savedTheme !== 'dark');
         setTheme(isLight);
 
         if (btn) {
@@ -1941,10 +1941,10 @@ func renderCredentialHTML(c *gin.Context, did string, vc SingleVCDisplay) {
         }
     </style>
 </head>
-<body>
+<body class="theme-light">
     <div class="header-row">
         <a href="/u/%s" class="back-link">&lt; Back to Issuer Profile</a>
-        <button id="theme-toggle-btn" class="theme-switch">🌓 LIGHT MODE</button>
+        <button id="theme-toggle-btn" class="theme-switch">🌓 DARK MODE</button>
     </div>
     <div class="card">
         <div class="status-badge active">ACTIVE</div>
@@ -1999,7 +1999,7 @@ func renderCredentialHTML(c *gin.Context, did string, vc SingleVCDisplay) {
             }
         }
 
-        const isLight = themeParam === 'light' || (!themeParam && savedTheme === 'light');
+        const isLight = themeParam === 'light' || (themeParam !== 'dark' && savedTheme !== 'dark');
         setTheme(isLight);
 
         if (btn) {
@@ -2186,10 +2186,10 @@ func renderTombstoneHTML(c *gin.Context, did, vcID, tombType, revokedAt, signatu
         }
     </style>
 </head>
-<body class="%s-theme">
+<body class="theme-light %s-theme">
     <div class="header-row">
         <a href="/u/%s" class="back-link">&lt; Back to Issuer Profile</a>
-        <button id="theme-toggle-btn" class="theme-switch">🌓 LIGHT MODE</button>
+        <button id="theme-toggle-btn" class="theme-switch">🌓 DARK MODE</button>
     </div>
     <div class="card">
         <div class="status-badge %s">%s</div>
@@ -2244,7 +2244,7 @@ func renderTombstoneHTML(c *gin.Context, did, vcID, tombType, revokedAt, signatu
             }
         }
 
-        const isLight = themeParam === 'light' || (!themeParam && savedTheme === 'light');
+        const isLight = themeParam === 'light' || (themeParam !== 'dark' && savedTheme !== 'dark');
         setTheme(isLight);
 
         if (btn) {
