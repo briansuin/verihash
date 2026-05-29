@@ -1753,11 +1753,7 @@ func main() {
 `, prevClass, prevHref, page, totalPages, totalCount, nextClass, nextHref)
 			}
 
-			htmlStr += `    <footer style="margin-top: 3rem; border-top: var(--tombstone-section-border); padding: 1.5rem 0; font-size: 0.75rem; color: var(--meta-color); text-align: center; line-height: 1.6;">
-        For feedback or suggestions, please contact <strong>Brian Suin</strong> &nbsp;·&nbsp; Email: <a href="mailto:runbo.sun@gmail.com" style="color: var(--accent); text-decoration: none; border-bottom: 1px dashed var(--btn-border);">runbo.sun@gmail.com</a>
-    </footer>
-
-    <script>
+			htmlStr += `    <script>
         const urlParams = new URLSearchParams(window.location.search);
         const themeParam = urlParams.get('theme');
         const savedTheme = localStorage.getItem('verihash-theme-preference');
@@ -1985,10 +1981,6 @@ func renderCredentialHTML(c *gin.Context, did string, vc SingleVCDisplay) {
     </div>
     
     <a href="?format=json" class="btn-raw" target="_blank">[ VIEW RAW JSON ↗ ]</a>
-
-    <footer style="margin-top: 3rem; border-top: var(--proof-border); padding: 1.5rem 0; font-size: 0.75rem; color: var(--meta-color); text-align: center; line-height: 1.6;">
-        For feedback or suggestions, please contact <strong>Brian Suin</strong> &nbsp;·&nbsp; Email: <a href="mailto:runbo.sun@gmail.com" style="color: var(--accent); text-decoration: none; border-bottom: 1px dashed var(--btn-border);">runbo.sun@gmail.com</a>
-    </footer>
 
     <script>
         const urlParams = new URLSearchParams(window.location.search);
@@ -2234,10 +2226,6 @@ func renderTombstoneHTML(c *gin.Context, did, vcID, tombType, revokedAt, signatu
     </div>
     
     <a href="?format=json" class="btn-raw" target="_blank">[ VIEW RAW TOMBSTONE ↗ ]</a>
-
-    <footer style="margin-top: 3rem; border-top: 1px dashed var(--accent-dim); padding: 1.5rem 0; font-size: 0.75rem; color: var(--meta-color); text-align: center; line-height: 1.6;">
-        For feedback or suggestions, please contact <strong>Brian Suin</strong> &nbsp;·&nbsp; Email: <a href="mailto:runbo.sun@gmail.com" style="color: var(--accent); text-decoration: none; border-bottom: 1px dashed var(--btn-border);">runbo.sun@gmail.com</a>
-    </footer>
 
     <script>
         const urlParams = new URLSearchParams(window.location.search);
