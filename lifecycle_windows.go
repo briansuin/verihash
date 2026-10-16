@@ -43,22 +43,63 @@ func EnsureSingleInstance() {
 	// Leak the handle intentionally; it lives for the entire process lifetime
 	// and is released automatically by the OS when the process exits.
 	_ = handle
+
+	// First instance: create the auto-reset wake event the second instance will signal.
+	evName, _ := windows.UTF16PtrFromString(wakeEventName)
+	if ev, e := windows.CreateEvent(nil, 0, 0, evName); e == nil || ev != 0 {
+		wakeEvent = ev
+	}
 }
 
-// bringExistingInstanceToFront broadcasts WM_USER+1 so the existing VeriHash
-// window can react and show itself (handled by Wails window message pump).
-func bringExistingInstanceToFront() {
-	user32 := windows.NewLazySystemDLL("user32.dll")
-	postMsg := user32.NewProc("PostMessageW")
+// wakeEventName is the named event used to ask the running instance to show its window.
+const wakeEventName = "Global\\VeriHash_Wake_Event"
 
-	// HWND_BROADCAST = 0xFFFF; sends to all top-level windows.
-	postMsg.Call(
-		uintptr(0xFFFF), // HWND_BROADCAST
-		uintptr(wmBringToFront),
-		0,
-		0,
-	)
+var wakeEvent windows.Handle
+
+// bringExistingInstanceToFront signals the named wake event of the running
+// instance (replaces the old HWND_BROADCAST WM_USER+1, which nothing handled).
+func bringExistingInstanceToFront() {
+	evName, _ := windows.UTF16PtrFromString(wakeEventName)
+	h, err := windows.OpenEvent(windows.EVENT_MODIFY_STATE, false, evName)
+	if err != nil {
+		return
+	}
+	defer windows.CloseHandle(h)
+	_ = windows.SetEvent(h)
 	_ = unsafe.Sizeof(uintptr(0)) // keep "unsafe" import used
+}
+
+// startWakeListener waits for wake signals from second launches.
+func startWakeListener(a *App) {
+	if wakeEvent == 0 {
+		return
+	}
+	go func() {
+		for {
+			r, err := windows.WaitForSingleObject(wakeEvent, windows.INFINITE)
+			if err != nil || r != windows.WAIT_OBJECT_0 {
+				return
+			}
+			a.showWindow()
+		}
+	}()
+}
+
+// showWindow reveals the window, restoring it from minimised state and
+// recentring it if its saved position is off-screen.
+func (a *App) showWindow() {
+	if a.ctx == nil {
+		return
+	}
+	runtime.WindowShow(a.ctx)
+	runtime.WindowUnminimise(a.ctx)
+	x, y := runtime.WindowGetPosition(a.ctx)
+	if !isUsableWindowPosition(x, y) {
+		runtime.WindowCenter(a.ctx)
+	}
+	runtime.WindowSetAlwaysOnTop(a.ctx, true)
+	runtime.WindowSetAlwaysOnTop(a.ctx, false)
+	a.windowVisible = true
 }
 
 // isAutoStartLaunch returns true when the app was launched by Windows at boot
@@ -85,10 +126,7 @@ func setupSystemTray(a *App) {
 
 		// BIND LEFT CLICK: Show window directly
 		systray.SetOnClick(func(menu systray.IMenu) {
-			if a.ctx != nil {
-				runtime.WindowShow(a.ctx)
-				a.windowVisible = true
-			}
+			a.showWindow()
 		})
 
 		// BIND RIGHT CLICK: Show context menu
@@ -98,10 +136,7 @@ func setupSystemTray(a *App) {
 
 		mShow := systray.AddMenuItem("Show VeriHash", "Bring VeriHash window to front")
 		mShow.Click(func() {
-			if a.ctx != nil {
-				runtime.WindowShow(a.ctx)
-				a.windowVisible = true
-			}
+			a.showWindow()
 		})
 
 		systray.AddSeparator()
@@ -119,6 +154,7 @@ func setupSystemTray(a *App) {
 	systrayEnd = end
 	// start() registers the hidden Win32 window and begins dispatching messages.
 	start()
+	startWakeListener(a)
 }
 
 // shutdownTray saves the final window state then removes the tray icon.

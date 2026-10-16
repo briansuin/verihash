@@ -34,7 +34,8 @@ type NodeIdentity struct {
 type WalletStatus int
 
 const (
-	WalletStatusNew        WalletStatus = iota // No key file — first run
+	WalletStatusUnknown    WalletStatus = iota // Not yet detected (startup() still running)
+	WalletStatusNew                            // No key file — first run
 	WalletStatusEncrypted                      // Key file is encrypted — needs password
 	WalletStatusPlaintext                      // Key file is plaintext — needs migration
 )

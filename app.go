@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	_ "embed"
 
@@ -87,11 +88,53 @@ type App struct {
 	broadcastManager *BroadcastManager
 	indexUpdater     *IndexUpdater // Phase 4.5: auto-syncs the public root index Gist
 	windowVisible    bool          // tracks whether the main window is currently shown
+
+	// walletReady is closed once startup() has finished detecting/unlocking the
+	// wallet. Wails runs OnStartup in a goroutine concurrently with the frontend
+	// load, so wallet-state bindings must wait on this to avoid reading zero values.
+	walletReady     chan struct{}
+	walletReadyOnce sync.Once
 }
 
 // NewApp creates a new App application struct
 func NewApp() *App {
-	return &App{windowVisible: true} // assume visible until proven otherwise
+	return &App{
+		windowVisible: true, // assume visible until proven otherwise
+		walletStatus:  WalletStatusUnknown,
+		walletReady:   make(chan struct{}),
+	}
+}
+
+// markWalletReady signals that wallet initialisation in startup() is complete.
+func (a *App) markWalletReady() {
+	a.walletReadyOnce.Do(func() { close(a.walletReady) })
+}
+
+// waitWalletReady blocks until startup() has initialised the wallet (or timeout).
+func (a *App) waitWalletReady() {
+	select {
+	case <-a.walletReady:
+	case <-time.After(30 * time.Second):
+	}
+}
+
+// getKeyringPasswordWithRetry reads the vault password from the OS keychain.
+// Right after logon the Credential Manager can be briefly unavailable, so retry
+// a few times before giving up.
+func getKeyringPasswordWithRetry() (string, error) {
+	var pwd string
+	var err error
+	for i := 0; i < 5; i++ {
+		pwd, err = keyring.Get("VeriHash", "vault_password")
+		if err == nil && pwd != "" {
+			return pwd, nil
+		}
+		if err == keyring.ErrNotFound {
+			return "", err // genuinely not stored; no point retrying
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return pwd, err
 }
 
 // startup is called when the app starts. The context is saved
@@ -125,7 +168,7 @@ func (a *App) startup(ctx context.Context) {
 		a.privKey = privKey
 	case WalletStatusEncrypted:
 		// Attempt Auto-Unlock from persistent Keyring
-		pwd, err := keyring.Get("VeriHash", "vault_password")
+		pwd, err := getKeyringPasswordWithRetry()
 		if err == nil && pwd != "" {
 			pubKey, privKey, err := loadEncryptedKey(pwd)
 			if err == nil {
@@ -146,6 +189,9 @@ func (a *App) startup(ctx context.Context) {
 		a.privKey = privKey
 	}
 
+	// Wallet state is now final — release any frontend calls waiting on it.
+	a.markWalletReady()
+
 	// ── Restore window geometry ──────────────────────────────────────────────
 	// Load config once here so window geometry and visibility can be applied
 	// before any subsystem starts (broadcast, cloud sync, etc.).
@@ -156,8 +202,13 @@ func (a *App) startup(ctx context.Context) {
 	if cfg.WindowWidth > 0 && cfg.WindowHeight > 0 {
 		runtime.WindowSetSize(ctx, cfg.WindowWidth, cfg.WindowHeight)
 	}
-	if cfg.WindowX != 0 || cfg.WindowY != 0 {
-		runtime.WindowSetPosition(ctx, cfg.WindowX, cfg.WindowY)
+	if isUsableWindowPosition(cfg.WindowX, cfg.WindowY) {
+		if cfg.WindowX != 0 || cfg.WindowY != 0 {
+			runtime.WindowSetPosition(ctx, cfg.WindowX, cfg.WindowY)
+		}
+	} else {
+		// Saved position is off-screen (e.g. -32000 from a minimised window).
+		runtime.WindowCenter(ctx)
 	}
 
 	// ── Restore visibility state ──────────────────────────────────────────────
@@ -217,6 +268,13 @@ func (a *App) startup(ctx context.Context) {
 	}
 }
 
+// isUsableWindowPosition reports whether a window position is plausibly on a
+// visible screen. Windows uses -32000,-32000 for minimised/hidden windows, and
+// restoring that value would place the window off-screen.
+func isUsableWindowPosition(x, y int) bool {
+	return x > -5000 && x < 10000 && y > -5000 && y < 10000
+}
+
 // SaveWindowState is called by the frontend (on resize / before hide) to
 // persist the current window geometry and visibility flag to config.
 // This is a Wails-bound method so the JS side can call it without Go knowing
@@ -235,8 +293,14 @@ func (a *App) SaveWindowState(hidden bool) {
 	}
 	// Only persist non-zero positions (0,0 means top-left which is valid,
 	// so accept it; but skip if the window is off-screen somehow).
-	cfg.WindowX = x
-	cfg.WindowY = y
+	if isUsableWindowPosition(x, y) {
+		cfg.WindowX = x
+		cfg.WindowY = y
+	} else if !isUsableWindowPosition(cfg.WindowX, cfg.WindowY) {
+		// Drop a previously saved bad position too.
+		cfg.WindowX = 0
+		cfg.WindowY = 0
+	}
 	cfg.WindowHidden = hidden
 	a.windowVisible = !hidden
 	if out, err := json.MarshalIndent(cfg, "", "  "); err == nil {
@@ -247,6 +311,7 @@ func (a *App) SaveWindowState(hidden bool) {
 // GetWalletStatus returns the wallet state for the frontend to act on.
 // Returns: "new" (first run), "encrypted" (needs unlock), "plaintext" (needs migration), or "unlocked"
 func (a *App) GetWalletStatus() string {
+	a.waitWalletReady()
 	switch a.walletStatus {
 	case WalletStatusNew:
 		return "new"
@@ -365,6 +430,7 @@ func (a *App) MigrateWallet(password, confirm string) string {
 // GetMnemonic returns the generated mnemonic for a NEW wallet.
 // It clears it from memory after being called for security.
 func (a *App) GetMnemonic() string {
+	a.waitWalletReady()
 	m := a.mnemonic
 	a.mnemonic = "" // Clear after one-time retrieval
 	return m
@@ -381,6 +447,7 @@ func (a *App) LockVault() string {
 
 // GetDID returns the W3C-compliant did:key identifier for this node
 func (a *App) GetDID() string {
+	a.waitWalletReady()
 	if a.pubKey != nil {
 		return pubKeyToDIDKey(a.pubKey)
 	}
