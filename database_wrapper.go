@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -131,6 +135,95 @@ func connectDB() (*VeriHashDB, error) {
 	}
 	db.SetMaxOpenConns(1)
 	return &VeriHashDB{conn: db}, nil
+}
+
+// ExportCompactLedger writes a small, self-contained copy of the *authoritative*
+// ledger (session_credentials + broadcast_publications) to dstPath.
+//
+// file_snapshots is deliberately NOT exported: it is a local, transient "work
+// exhaust" table (garbage-collected on every mint) that can grow to GBs, while
+// the credential chain itself is only a few MB. The exported file has the full
+// schema (with an empty file_snapshots), so RestoreDataFromSync / initDB can
+// open it exactly like a normal proof_of_work.db.
+func (db *VeriHashDB) ExportCompactLedger(dstPath string) error {
+	_ = os.Remove(dstPath)
+
+	ctx := context.Background()
+	// Pin one connection: ATTACH is per-connection.
+	conn, err := db.conn.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	// SQLite wants forward slashes / escaped quotes inside the ATTACH literal.
+	lit := strings.ReplaceAll(filepath.ToSlash(dstPath), "'", "''")
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf(`ATTACH DATABASE '%s' AS export`, lit)); err != nil {
+		return fmt.Errorf("attach export db: %w", err)
+	}
+	defer conn.ExecContext(ctx, `DETACH DATABASE export`)
+
+	stmts := []string{
+		`PRAGMA export.journal_mode = DELETE`,
+		`CREATE TABLE export.file_snapshots (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			timestamp REAL NOT NULL,
+			file_path TEXT NOT NULL,
+			content_diff TEXT NOT NULL,
+			current_hash TEXT NOT NULL,
+			previous_hash TEXT NOT NULL,
+			signature TEXT
+		)`,
+		`CREATE TABLE export.session_credentials (
+			vc_id TEXT PRIMARY KEY,
+			timestamp REAL NOT NULL,
+			project_context TEXT NOT NULL,
+			ai_insight TEXT NOT NULL,
+			skill_tags TEXT NOT NULL,
+			file_paths TEXT NOT NULL,
+			full_vc_json TEXT NOT NULL,
+			status INTEGER DEFAULT 1,
+			vc_hash TEXT DEFAULT '',
+			prev_vc_hash TEXT DEFAULT '',
+			revoked_at INTEGER DEFAULT 0,
+			revoke_signature TEXT DEFAULT ''
+		)`,
+		`CREATE TABLE export.broadcast_publications (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			vc_id           TEXT NOT NULL,
+			channel         TEXT NOT NULL,
+			status          TEXT NOT NULL DEFAULT 'pending',
+			remote_id       TEXT NOT NULL DEFAULT '',
+			remote_url      TEXT NOT NULL DEFAULT '',
+			attempt_count   INTEGER NOT NULL DEFAULT 0,
+			last_error      TEXT NOT NULL DEFAULT '',
+			last_attempt_at REAL NOT NULL DEFAULT 0,
+			next_retry_at   REAL NOT NULL DEFAULT 0,
+			created_at      REAL NOT NULL,
+			updated_at      REAL NOT NULL,
+			UNIQUE(vc_id, channel)
+		)`,
+		// rowid order == chain order; keep it so VerifyChainIntegrity still passes.
+		`INSERT INTO export.session_credentials
+			(vc_id, timestamp, project_context, ai_insight, skill_tags, file_paths,
+			 full_vc_json, status, vc_hash, prev_vc_hash, revoked_at, revoke_signature)
+		 SELECT vc_id, timestamp, project_context, ai_insight, skill_tags, file_paths,
+			 full_vc_json, status, COALESCE(vc_hash,''), COALESCE(prev_vc_hash,''),
+			 COALESCE(revoked_at,0), COALESCE(revoke_signature,'')
+		 FROM main.session_credentials ORDER BY rowid ASC`,
+		`INSERT INTO export.broadcast_publications
+			(vc_id, channel, status, remote_id, remote_url, attempt_count, last_error,
+			 last_attempt_at, next_retry_at, created_at, updated_at)
+		 SELECT vc_id, channel, status, remote_id, remote_url, attempt_count, last_error,
+			 last_attempt_at, next_retry_at, created_at, updated_at
+		 FROM main.broadcast_publications ORDER BY id ASC`,
+	}
+	for _, s := range stmts {
+		if _, err := conn.ExecContext(ctx, s); err != nil {
+			return fmt.Errorf("export ledger: %w", err)
+		}
+	}
+	return nil
 }
 
 // GetLatestHash retrieves the last hash from the chain

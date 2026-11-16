@@ -51,3 +51,6 @@ test_files/
 VerihashOrg/data/
 VerihashOrg/node.exe
 VerihashOrg/verihash-node
+
+# Local Documentation
+UPGRADE_GUIDE.md

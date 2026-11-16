@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
@@ -84,6 +85,9 @@ type App struct {
 	apiKey           string
 	baseURL          string
 	cloudSyncDirs    []string
+	syncMu           sync.Mutex  // guards syncTimer
+	syncTimer        *time.Timer // debounce timer for cloud sync
+	syncRunMu        sync.Mutex  // serialises actual sync runs
 	ignoredPatterns  []string
 	broadcastManager *BroadcastManager
 	indexUpdater     *IndexUpdater // Phase 4.5: auto-syncs the public root index Gist
@@ -264,7 +268,7 @@ func (a *App) startup(ctx context.Context) {
 
 	// 5. Sync DB snapshot to all bound cloud directories on startup
 	if len(a.cloudSyncDirs) > 0 {
-		go a.syncDBToCloud()
+		a.requestCloudSync()
 	}
 }
 
@@ -756,7 +760,7 @@ func (a *App) TriggerMint(selectedFiles []string, workspacePath string, projectN
 			// VC JSON uses "id" not "vc_id"
 			if vcID, ok := parseResult["id"].(string); ok {
 				if len(a.cloudSyncDirs) > 0 {
-					go a.syncDBToCloud()
+					a.requestCloudSync()
 				}
 				// Fire-and-forget broadcast across all registered channels
 				if a.broadcastManager != nil {
@@ -1073,7 +1077,7 @@ func (a *App) RevokeCredential(vcID string) string {
 
 	// Sync the updated DB (with revocation) to all cloud sync dirs
 	if len(a.cloudSyncDirs) > 0 {
-		go a.syncDBToCloud()
+		a.requestCloudSync()
 	}
 
 	// Best-effort: stamp the remote Gist with an in-place tombstone for every
@@ -1177,37 +1181,75 @@ func (a *App) ImportMnemonic(mnemonic, newPassword, confirm string) string {
 	return `{"status": "OK", "did": "` + pubKeyToDIDKey(pubKey) + `"}`
 }
 
-// syncDBToCloud copies the full proof_of_work.db to every configured cloud sync
-// directory as verihash_ledger.db. Called after Mint and Revoke so the cloud
-// always holds a current snapshot of the complete credential ledger.
-// It is intentionally fire-and-forget (called via goroutine).
-func (a *App) syncDBToCloud() {
-	// WAL checkpoint so the DB file on disk is fully up to date
-	_, _ = a.db.conn.Exec(`PRAGMA wal_checkpoint(FULL);`)
+// requestCloudSync schedules a (debounced) ledger sync to all cloud sync dirs.
+// Bursts of Mint/Revoke calls are coalesced into a single export.
+func (a *App) requestCloudSync() {
+	a.syncMu.Lock()
+	defer a.syncMu.Unlock()
+	if a.syncTimer != nil {
+		a.syncTimer.Stop()
+	}
+	a.syncTimer = time.AfterFunc(5*time.Second, a.syncDBToCloud)
+}
 
-	// Read the DB file
-	dbBytes, err := os.ReadFile(dbFile)
+// syncDBToCloud exports a COMPACT copy of the ledger (credentials + broadcast
+// state only, typically well under a few MB) to every configured cloud sync
+// directory as verihash_ledger.db.
+//
+// It never uploads the raw proof_of_work.db: that file also contains the
+// transient file_snapshots table which can reach GBs and would force the cloud
+// client to re-upload everything on each mint. Writes are atomic (tmp+rename)
+// and skipped entirely when the destination already holds identical bytes.
+func (a *App) syncDBToCloud() {
+	a.syncRunMu.Lock()
+	defer a.syncRunMu.Unlock()
+
+	logf := func(typ, format string, args ...interface{}) {
+		runtime.EventsEmit(a.ctx, "log", map[string]string{"msg": fmt.Sprintf(format, args...), "type": typ})
+	}
+
+	if a.db == nil || len(a.cloudSyncDirs) == 0 {
+		return
+	}
+
+	// Export into a local temp file first (never inside a cloud folder).
+	tmpDB := filepath.Join(os.TempDir(), fmt.Sprintf("verihash_ledger_export_%d.db", os.Getpid()))
+	defer func() {
+		_ = os.Remove(tmpDB)
+		_ = os.Remove(tmpDB + "-journal")
+	}()
+	if err := a.db.ExportCompactLedger(tmpDB); err != nil {
+		logf("err", "[CLOUD-SYNC] Cannot export ledger: %v", err)
+		return
+	}
+	dbBytes, err := os.ReadFile(tmpDB)
 	if err != nil {
-		runtime.EventsEmit(a.ctx, "log", map[string]string{
-			"msg":  "[CLOUD-SYNC] Cannot read DB for sync: " + err.Error(),
-			"type": "err",
-		})
+		logf("err", "[CLOUD-SYNC] Cannot read exported ledger: %v", err)
 		return
 	}
 
 	for _, syncDir := range a.cloudSyncDirs {
 		destPath := filepath.Join(syncDir, "verihash_ledger.db")
-		if writeErr := os.WriteFile(destPath, dbBytes, 0644); writeErr != nil {
-			runtime.EventsEmit(a.ctx, "log", map[string]string{
-				"msg":  fmt.Sprintf("[CLOUD-SYNC] Failed to sync DB to %s: %v", filepath.Base(syncDir), writeErr),
-				"type": "err",
-			})
+
+		// Skip if the destination is already byte-identical (no needless re-upload).
+		if info, statErr := os.Stat(destPath); statErr == nil && info.Size() == int64(len(dbBytes)) {
+			if existing, rErr := os.ReadFile(destPath); rErr == nil && bytes.Equal(existing, dbBytes) {
+				continue
+			}
+		}
+
+		stagePath := destPath + ".tmp"
+		if writeErr := os.WriteFile(stagePath, dbBytes, 0644); writeErr != nil {
+			logf("err", "[CLOUD-SYNC] Failed to sync DB to %s: %v", filepath.Base(syncDir), writeErr)
+			_ = os.Remove(stagePath)
 			continue
 		}
-		runtime.EventsEmit(a.ctx, "log", map[string]string{
-			"msg":  fmt.Sprintf("[CLOUD-SYNC] ✓ verihash_ledger.db → %s", filepath.Base(syncDir)),
-			"type": "sys",
-		})
+		if renErr := os.Rename(stagePath, destPath); renErr != nil {
+			logf("err", "[CLOUD-SYNC] Failed to finalize DB in %s: %v", filepath.Base(syncDir), renErr)
+			_ = os.Remove(stagePath)
+			continue
+		}
+		logf("sys", "[CLOUD-SYNC] ✓ verihash_ledger.db (%d KB) → %s", len(dbBytes)/1024, filepath.Base(syncDir))
 	}
 }
 

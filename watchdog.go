@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -141,6 +142,16 @@ func nullTimer() *time.Timer {
 }
 
 func processFileChange(ctx context.Context, filePath string, db *VeriHashDB, privKey []byte) {
+	// Guard against ledger bloat: only small, text-like files are diffed and
+	// stored. Large files / PDFs / office docs / archives / media are skipped
+	// BEFORE being read into memory (previously a single PDF could add 400MB+).
+	if shouldSkipForSnapshot(filePath) {
+		return
+	}
+	if info, statErr := os.Stat(filePath); statErr != nil || info.Size() > maxSnapshotFileBytes {
+		return
+	}
+
 	contentBytes, err := os.ReadFile(filePath)
 	if err != nil {
 		return
@@ -173,13 +184,39 @@ func processFileChange(ctx context.Context, filePath string, db *VeriHashDB, pri
 	runtime.EventsEmit(ctx, "log", map[string]string{"msg": msg, "type": "hash"})
 }
 
+// maxSnapshotFileBytes caps the size of a file that will be diffed and stored
+// in the local file_snapshots table. The AI oracle only uses ~3000 chars/file,
+// so storing megabytes per snapshot is pure waste.
+const maxSnapshotFileBytes = 2 * 1024 * 1024 // 2 MB
+
+// binaryExts lists extensions that are never useful as text diffs.
+var binaryExts = map[string]bool{
+	".pdf": true, ".doc": true, ".docx": true, ".xls": true, ".xlsx": true, ".ppt": true, ".pptx": true,
+	".zip": true, ".rar": true, ".7z": true, ".gz": true, ".tar": true, ".bz2": true, ".iso": true,
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".bmp": true, ".webp": true, ".tif": true, ".tiff": true,
+	".psd": true, ".heic": true, ".ico": true,
+	".mp3": true, ".wav": true, ".flac": true, ".aac": true, ".mp4": true, ".mov": true, ".avi": true, ".mkv": true, ".wmv": true,
+	".exe": true, ".dll": true, ".so": true, ".dylib": true, ".bin": true, ".db": true, ".sqlite": true,
+	".ttf": true, ".otf": true, ".woff": true, ".woff2": true,
+}
+
+// shouldSkipForSnapshot reports whether a file is known to be binary by extension.
+func shouldSkipForSnapshot(path string) bool {
+	return binaryExts[strings.ToLower(filepath.Ext(path))]
+}
+
 func isBinary(data []byte) bool {
 	if len(data) == 0 {
 		return false
 	}
+	// Magic numbers for common containers that start with printable bytes
+	// (e.g. "%PDF-" slips past a NUL-byte check).
+	if bytes.HasPrefix(data, []byte("%PDF-")) || bytes.HasPrefix(data, []byte("PK\x03\x04")) {
+		return true
+	}
 	limit := len(data)
-	if limit > 512 {
-		limit = 512
+	if limit > 8000 {
+		limit = 8000
 	}
 	for _, b := range data[:limit] {
 		if b == 0 {
